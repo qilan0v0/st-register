@@ -1,0 +1,19 @@
+{
+  "name": "st-register",
+  "version": "1.0.0",
+  "description": "Standalone multi-user self-registration server for SillyTavern",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node register-server.js"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "express": "^4.21.0",
+    "extract-zip": "^2.0.1",
+    "form-data": "^4.0.5",
+    "lodash": "^4.17.21",
+    "node-persist": "^4.0.0",
+    "yaml": "^2.8.3"
+  }
+}

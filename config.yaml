@@ -1,0 +1,107 @@
+# ───────────────────────────────────────────────────────────────
+# st-register 配置文件
+#
+# 这是「注册 + 反向代理 + 后台管理」服务自己的配置，
+# 与 SillyTavern 的 config.yaml 互不影响（不会修改 SillyTavern 任何文件）。
+# 修改后需重启服务生效：node register-server.js
+# ───────────────────────────────────────────────────────────────
+
+# 对外公开端口（用户访问注册页 / 登录 / SillyTavern 都用这个端口）
+publicPort: 9000
+
+# 网站外观（显示在登录 / 注册 / 后台页面，可在后台管理中修改）
+site:
+  # 网站标题
+  title: "测试"
+  # 网站 Logo：可填图片 URL，或留空只显示标题文字
+  logo: ""
+
+# 登录/注册页背景图（可在后台管理中修改）
+background:
+  # 模式：none=无（极光）| api=随机图API | urls=多链接随机 | local=本地图片 | folder=本地文件夹随机
+  mode: urls
+  # api 模式：返回随机图片的接口地址（每次加载随机换图）
+  api: ""
+  # urls 模式：图片地址列表（后台每行一个）
+  urls:
+    - https://free.picui.cn/free/2025/12/01/692daf0e5d2c8.jpg
+  # local 模式：本地图片路径（相对 st-register 目录或绝对路径）
+  local: ""
+  # folder 模式：本地图片文件夹路径（从中随机取一张）
+  folder: ""
+  # 暗化遮罩浓度 0-100（越大越暗，保证表单文字清晰可读）
+  dim: 10
+  # 背景模糊像素（0 = 不模糊）
+  blur: 0
+
+# 登录/注册卡片样式（可在后台管理中修改）
+card:
+  # 主强调色（按钮/链接/标题/聚焦光晕）
+  accent: "#00ccff"
+  # 副强调色（渐变搭配）
+  accent2: "#00aaff"
+  # 卡片不透明度 0-100（越低越通透、越透出背景图）
+  opacity: 50
+  # 卡片圆角像素
+  radius: 15
+  # 毛玻璃模糊像素
+  blur: 10
+  # 文字主色（正文/标签/输入文字的基础色）
+  textColor: "#ffffff"
+  # 标题颜色（留空 = 默认彩色渐变；填颜色 = 纯色标题）
+  titleColor: ""
+  # 字号缩放百分比（90=小 100=适中 115=大）
+  fontScale: 100
+  # 字体：system=系统默认 | rounded=圆润 | serif=衬线 | mono=等宽
+  fontFamily: system
+
+# 友情链接（显示在登录/注册页底部，可在后台管理中修改）
+friendLinks:
+  # 是否启用
+  enabled: true
+  # 链接列表，每条：name 名称、url 链接
+  links:
+    - name: 1号
+      url: http://localhost:9000/
+    - name: 2号
+      url: http://localhost:9000/
+
+# 公告（进入 SillyTavern 后弹窗显示，可在后台管理中修改）
+announcement:
+  # 是否启用公告
+  enabled: true
+  # 公告内容（支持简单文本，换行有效）
+  content: "### 标题
+
+    \  - **粗体**、*斜体*
+
+    \  - `行内代码` 和 ``` 代码块
+
+    \  - -  / *  无序列表、1.  有序列表
+
+    \  - >  引用
+
+    \  - [链接](网址)、![图片](网址)
+
+    \  - --- 分割线"
+  # 弹出频率：once = 同一条只弹一次；always = 每次进入都弹
+  frequency: always
+
+# 后台管理
+admin:
+  # 是否启用后台管理页面 /admin
+  enabled: true
+  # 后台登录密码（务必修改为强密码！留空则后台不可用）
+  password: "123se"
+
+# 注册设置（可在后台管理中修改）
+registration:
+  # 注册人数上限，0 = 不限制（不含系统账户 default-user）
+  maxUsers: 7
+
+# SillyTavern 连接设置（一般无需修改）
+sillyTavern:
+  # SillyTavern 所在主机（反向代理目标，通常是本机）
+  host: 127.0.0.1
+  # SillyTavern 内部端口。留空则自动读取 SillyTavern 自己 config.yaml 里的 port
+  port:
