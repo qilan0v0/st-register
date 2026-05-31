@@ -3521,10 +3521,19 @@ app.post('/api/backup', jsonParser, async (req, res) => {
 
             sendProgress(`正在推送 ${fileSize} MB 到远程仓库...（可能需要较长时间）`, 80);
 
+            // 检测当前分支名（Hugging Face 默认 main，魔搭社区默认 master）
+            let currentBranch = 'master';
+            try {
+                currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: tempGitDir, encoding: 'utf8' }).trim();
+                console.log(`[备份] 当前分支: ${currentBranch}`);
+            } catch (branchErr) {
+                console.error('[备份] 获取分支名失败，使用默认 master:', branchErr.message);
+            }
+
             // 使用 spawn 来实时捕获 git push 输出，避免阻塞
             console.log('[备份] 开始推送到远程仓库...');
             await new Promise((resolve, reject) => {
-                const gitPush = spawn('git', ['push', 'origin', 'master'], {
+                const gitPush = spawn('git', ['push', 'origin', currentBranch], {
                     cwd: tempGitDir,
                     stdio: ['ignore', 'pipe', 'pipe']
                 });
