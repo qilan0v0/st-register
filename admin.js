@@ -501,6 +501,26 @@ const ADMIN_HTML_BODY = `
         </div>
 
         <div class="section panel">
+            <h2>💾 备份/恢复设置</h2>
+            <div class="err" id="backupErr"></div>
+            <form id="backupForm">
+                <div class="row">
+                    <div class="field">
+                        <label for="backupTempDir">临时文件目录（留空 = 使用系统临时目录）</label>
+                        <input type="text" id="backupTempDir" placeholder="留空使用系统临时目录">
+                        <div class="hint">相对路径基于 st-register 目录，或使用绝对路径</div>
+                    </div>
+                    <div class="field">
+                        <label for="backupCleanupHours">自动清理超过 N 小时的临时文件（0 = 不清理）</label>
+                        <input type="number" id="backupCleanupHours" min="0" step="1" placeholder="24">
+                    </div>
+                    <div class="checkline" style="margin-bottom:2px;" id="backupCurrentDir">当前临时目录：加载中...</div>
+                    <button class="btn" type="submit" id="backupBtn">保存</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="section panel">
             <h2>👥 用户列表 <span class="muted" id="userCount" style="font-weight:400;font-size:12px;"></span></h2>
             <div class="tablewrap">
                 <table>
@@ -572,7 +592,7 @@ async function refreshSession() {
 async function showDash() {
     loginView.classList.add('hidden'); disabledView.classList.add('hidden');
     dashView.classList.remove('hidden');
-    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackground(), loadCard(), loadFriendLinks()]);
+    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadBackground(), loadCard(), loadFriendLinks()]);
 }
 
 // ── 登录 / 登出 ──
@@ -686,6 +706,30 @@ $('regForm').addEventListener('submit', async (e) => {
     if (!r.ok) { showErr($('regErr'), (r.data && r.data.error) || '保存失败。'); return; }
     toast('注册设置已保存');
     await loadRegistration();
+});
+
+// ── 备份/恢复设置 ──
+async function loadBackupConfig() {
+    const { ok, data } = await api('GET', '/admin/api/backup-config');
+    if (!ok || !data) return;
+    $('backupTempDir').value = data.tempDir || '';
+    $('backupCleanupHours').value = data.autoCleanupHours || 24;
+    var currentDir = $('backupCurrentDir');
+    if (currentDir) {
+        currentDir.textContent = '当前临时目录：' + (data.currentTempDir || '系统临时目录');
+    }
+}
+$('backupForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); hideErr($('backupErr'));
+    const btn = $('backupBtn'); btn.disabled = true;
+    const r = await api('PUT', '/admin/api/backup-config', {
+        tempDir: $('backupTempDir').value.trim(),
+        autoCleanupHours: parseInt($('backupCleanupHours').value, 10) || 0,
+    });
+    btn.disabled = false;
+    if (!r.ok) { showErr($('backupErr'), (r.data && r.data.error) || '保存失败。'); return; }
+    toast('备份设置已保存（重启服务后生效）');
+    await loadBackupConfig();
 });
 
 // ── 背景设置 ──
@@ -953,6 +997,7 @@ export function mountAdmin(app, deps) {
         background, saveBackgroundConfig,
         card, saveCardConfig,
         friendLinks, saveFriendLinksConfig,
+        backupTempConfig, saveBackupConfig, getTempDir,
         mdRendererJs,
     } = deps;
 
@@ -1227,6 +1272,54 @@ export function mountAdmin(app, deps) {
             return res.json({ ok: true, maxUsers: registration.maxUsers });
         } catch (err) {
             console.error('[后台] 保存注册设置失败:', err);
+            return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
+        }
+    });
+
+    // 获取备份/恢复配置
+    app.get('/admin/api/backup-config', requireAdmin, (_req, res) => {
+        try {
+            return res.json({
+                tempDir: backupTempConfig.tempDir || '',
+                autoCleanupHours: backupTempConfig.autoCleanupHours || 24,
+                currentTempDir: getTempDir(),
+            });
+        } catch (err) {
+            console.error('[后台] 读取备份配置失败:', err);
+            return res.status(500).json({ error: '读取失败。' });
+        }
+    });
+
+    // 保存备份/恢复配置（写回 config.yaml）
+    app.put('/admin/api/backup-config', requireAdmin, jsonParser, (req, res) => {
+        try {
+            const body = req.body || {};
+            const patch = {};
+
+            if (typeof body.tempDir === 'string') {
+                patch.tempDir = body.tempDir.trim();
+            }
+
+            if (typeof body.autoCleanupHours === 'number') {
+                let hours = parseInt(body.autoCleanupHours, 10);
+                if (!Number.isFinite(hours) || hours < 0) hours = 0;
+                patch.autoCleanupHours = hours;
+            }
+
+            if (Object.keys(patch).length === 0) {
+                return res.status(400).json({ error: '没有可保存的内容。' });
+            }
+
+            saveBackupConfig(patch);
+            console.log('[后台] 已更新备份配置:', patch);
+            return res.json({
+                ok: true,
+                tempDir: backupTempConfig.tempDir,
+                autoCleanupHours: backupTempConfig.autoCleanupHours,
+                currentTempDir: getTempDir(),
+            });
+        } catch (err) {
+            console.error('[后台] 保存备份配置失败:', err);
             return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
         }
     });

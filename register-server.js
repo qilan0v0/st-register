@@ -18,8 +18,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 
 import express from 'express';
 import storage from 'node-persist';
@@ -28,6 +29,7 @@ import _ from 'lodash';
 import { ZipArchive } from 'archiver';
 import extract from 'extract-zip';
 import { createRequire } from 'node:module';
+import multer from 'multer';
 
 const require = createRequire(import.meta.url);
 const FormData = require('form-data');
@@ -93,6 +95,89 @@ const REGISTRATION = {
     maxUsers: Math.max(0, parseInt(
         (ownConfig.registration && ownConfig.registration.maxUsers) || 0, 10) || 0),
 };
+
+// 备份/恢复临时目录配置（可在后台修改并写回 config.yaml）
+const _backup = ownConfig.backup || {};
+const BACKUP_TEMP_CONFIG = {
+    tempDir: _backup.tempDir || '',  // 留空 = 使用系统临时目录
+    autoCleanupHours: Math.max(0, parseInt(_backup.autoCleanupHours, 10) || 24),
+};
+
+// 获取临时目录路径
+function getTempDir() {
+    if (BACKUP_TEMP_CONFIG.tempDir) {
+        // 使用配置的目录（相对或绝对路径）
+        const dir = path.isAbsolute(BACKUP_TEMP_CONFIG.tempDir)
+            ? BACKUP_TEMP_CONFIG.tempDir
+            : path.resolve(__dirname, BACKUP_TEMP_CONFIG.tempDir);
+
+        // 确保目录存在
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        return dir;
+    } else {
+        // 使用系统临时目录
+        return os.tmpdir();
+    }
+}
+
+// 保存备份配置到 config.yaml
+function saveBackupConfig(patch) {
+    const raw = fs.existsSync(OWN_CONFIG_PATH) ? fs.readFileSync(OWN_CONFIG_PATH, 'utf8') : '';
+    const doc = yaml.parseDocument(raw);
+
+    if (typeof patch.tempDir === 'string') {
+        doc.setIn(['backup', 'tempDir'], patch.tempDir);
+        BACKUP_TEMP_CONFIG.tempDir = patch.tempDir;
+    }
+    if (typeof patch.autoCleanupHours === 'number' && Number.isFinite(patch.autoCleanupHours)) {
+        const v = Math.max(0, Math.floor(patch.autoCleanupHours));
+        doc.setIn(['backup', 'autoCleanupHours'], v);
+        BACKUP_TEMP_CONFIG.autoCleanupHours = v;
+    }
+
+    fs.writeFileSync(OWN_CONFIG_PATH, doc.toString());
+}
+
+// 清理旧的临时文件
+function cleanupOldTempFiles() {
+    try {
+        const tempDir = getTempDir();
+        const files = fs.readdirSync(tempDir);
+        const now = Date.now();
+        const maxAge = BACKUP_TEMP_CONFIG.autoCleanupHours * 60 * 60 * 1000;
+
+        if (maxAge === 0) return; // 不自动清理
+
+        let cleaned = 0;
+        for (const file of files) {
+            // 只清理我们创建的临时文件
+            if (file.startsWith('backup-') || file.startsWith('git-temp-') ||
+                file.startsWith('git-restore-') || file.startsWith('backup-before-restore-')) {
+
+                const filePath = path.join(tempDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+
+                    // 删除超过指定时间的文件
+                    if (now - stats.mtimeMs > maxAge) {
+                        fs.rmSync(filePath, { recursive: true, force: true });
+                        cleaned++;
+                    }
+                } catch (err) {
+                    // 忽略无法访问的文件
+                }
+            }
+        }
+
+        if (cleaned > 0) {
+            console.log(`[清理] 已清理 ${cleaned} 个旧临时文件（超过 ${BACKUP_TEMP_CONFIG.autoCleanupHours} 小时）`);
+        }
+    } catch (err) {
+        console.error('[清理] 清理临时文件失败:', err.message);
+    }
+}
 
 // 服务器公网信息（启动时获取一次并缓存在内存，登录页展示）。
 const SERVER_INFO = { ip: '', location: '' };
@@ -1870,8 +1955,24 @@ function buildDashboardPage() {
             padding: 46px 42px;
             width: 100%;
             max-width: 600px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
             box-shadow: 0 24px 70px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07);
             animation: cardIn 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .container::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.03);
+            border-radius: 4px;
+        }
+        .container::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.15);
+            border-radius: 4px;
+        }
+        .container::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.25);
         }
         @keyframes cardIn {
             from { opacity: 0; transform: translateY(18px) scale(0.97); }
@@ -2068,10 +2169,112 @@ function buildDashboardPage() {
             border-color: #8a96ff;
             box-shadow: 0 0 0 3px rgba(124,138,255,0.16);
         }
+        .config-section select {
+            width: 100%;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 9px;
+            color: #e8eaf2;
+            font-size: 14px;
+            outline: none;
+            cursor: pointer;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        .config-section select:focus {
+            border-color: #8a96ff;
+            box-shadow: 0 0 0 3px rgba(124,138,255,0.16);
+        }
+        .config-section select option {
+            background: #1a1e2e;
+            color: #e8eaf2;
+            padding: 10px;
+        }
         .config-section .hint {
             font-size: 12px;
             color: #6b7290;
             margin-top: 6px;
+        }
+
+        /* 自定义确认对话框 */
+        .custom-confirm {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 9999;
+            align-items: center;
+            justify-content: center;
+        }
+        .custom-confirm.show {
+            display: flex;
+        }
+        .custom-confirm-dialog {
+            background: rgba(18, 22, 38, 0.95);
+            backdrop-filter: blur(22px) saturate(160%);
+            border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 18px;
+            padding: 32px;
+            max-width: 420px;
+            width: 90%;
+            box-shadow: 0 24px 70px rgba(0,0,0,0.7);
+            animation: confirmIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes confirmIn {
+            from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+            to { opacity: 1; transform: none; }
+        }
+        .custom-confirm-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .custom-confirm-title::before {
+            content: '⚠️';
+            font-size: 24px;
+        }
+        .custom-confirm-message {
+            font-size: 15px;
+            color: #aab0c6;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+        .custom-confirm-buttons {
+            display: flex;
+            gap: 12px;
+        }
+        .custom-confirm-btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 11px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform .15s, filter .2s;
+        }
+        .custom-confirm-btn:hover {
+            transform: translateY(-2px);
+            filter: brightness(1.1);
+        }
+        .custom-confirm-btn:active {
+            transform: translateY(0);
+        }
+        .custom-confirm-btn-cancel {
+            background: rgba(255,255,255,0.08);
+            color: #aab0c6;
+        }
+        .custom-confirm-btn-confirm {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+            box-shadow: 0 8px 20px rgba(239,68,68,0.4);
         }
 
         .logout-link {
@@ -2110,6 +2313,17 @@ function buildDashboardPage() {
         </div>
 
         <div class="section">
+            <div class="section-title">备份平台选择</div>
+            <div class="config-section">
+                <label for="backupPlatform">选择备份平台</label>
+                <select id="backupPlatform">
+                    <option value="modelscope">魔搭社区 (ModelScope)</option>
+                    <option value="huggingface">Hugging Face</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="section" id="modelScopeConfig">
             <div class="section-title">魔搭社区配置</div>
             <div class="config-section">
                 <label for="modelScopeToken">ModelScope Access Token</label>
@@ -2117,8 +2331,22 @@ function buildDashboardPage() {
                 <div class="hint">在 <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" style="color:#b9a3ff;">魔搭社区</a> 获取 Token</div>
             </div>
             <div class="config-section">
-                <label for="datasetName">数据集名称</label>
-                <input type="text" id="datasetName" placeholder="例如：username/st-backup">
+                <label for="modelScopeDataset">数据集名称</label>
+                <input type="text" id="modelScopeDataset" placeholder="例如：username/st-backup">
+                <div class="hint">格式：用户名/数据集名称</div>
+            </div>
+        </div>
+
+        <div class="section" id="huggingFaceConfig" style="display:none;">
+            <div class="section-title">Hugging Face 配置</div>
+            <div class="config-section">
+                <label for="huggingFaceToken">Hugging Face Access Token</label>
+                <input type="password" id="huggingFaceToken" placeholder="输入您的 Hugging Face Access Token">
+                <div class="hint">在 <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#b9a3ff;">Hugging Face</a> 获取 Token（需要 write 权限）</div>
+            </div>
+            <div class="config-section">
+                <label for="huggingFaceDataset">数据集名称</label>
+                <input type="text" id="huggingFaceDataset" placeholder="例如：username/st-backup">
                 <div class="hint">格式：用户名/数据集名称</div>
             </div>
         </div>
@@ -2138,6 +2366,22 @@ function buildDashboardPage() {
         </div>
 
         <div class="section">
+            <div class="section-title">本地备份管理</div>
+            <div class="config-section">
+                <label for="localBackupFile">上传本地备份文件</label>
+                <input type="file" id="localBackupFile" accept=".zip" style="display:none;">
+                <button class="btn-secondary" id="uploadBackupBtn" style="width:100%;margin-bottom:12px;">
+                    📁 选择备份文件
+                </button>
+                <div class="hint" id="uploadHint">支持 .zip 格式的备份文件</div>
+                <button class="btn-primary" id="restoreLocalBtn" style="width:100%;display:none;">
+                    <span class="spinner" id="restoreLocalSpinner"></span>
+                    恢复本地备份
+                </button>
+            </div>
+        </div>
+
+        <div class="section">
             <button class="btn-enter" id="enterBtn">
                 🏰 进入酒馆
             </button>
@@ -2148,17 +2392,41 @@ function buildDashboardPage() {
         </div>
     </div>
 
+    <!-- 自定义确认对话框 -->
+    <div class="custom-confirm" id="customConfirm">
+        <div class="custom-confirm-dialog">
+            <div class="custom-confirm-title">确认操作</div>
+            <div class="custom-confirm-message" id="confirmMessage">确定要继续吗？</div>
+            <div class="custom-confirm-buttons">
+                <button class="custom-confirm-btn custom-confirm-btn-cancel" id="confirmCancel">取消</button>
+                <button class="custom-confirm-btn custom-confirm-btn-confirm" id="confirmOk">确定</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const message = document.getElementById('message');
         const backupBtn = document.getElementById('backupBtn');
         const restoreBtn = document.getElementById('restoreBtn');
         const backupSpinner = document.getElementById('backupSpinner');
         const restoreSpinner = document.getElementById('restoreSpinner');
-        const tokenInput = document.getElementById('modelScopeToken');
-        const datasetInput = document.getElementById('datasetName');
+        const platformSelect = document.getElementById('backupPlatform');
+        const modelScopeConfig = document.getElementById('modelScopeConfig');
+        const huggingFaceConfig = document.getElementById('huggingFaceConfig');
+        const modelScopeTokenInput = document.getElementById('modelScopeToken');
+        const modelScopeDatasetInput = document.getElementById('modelScopeDataset');
+        const huggingFaceTokenInput = document.getElementById('huggingFaceToken');
+        const huggingFaceDatasetInput = document.getElementById('huggingFaceDataset');
         const progressContainer = document.getElementById('progressContainer');
         const progressFill = document.getElementById('progressFill');
         const progressText = document.getElementById('progressText');
+        const localBackupFile = document.getElementById('localBackupFile');
+        const uploadBackupBtn = document.getElementById('uploadBackupBtn');
+        const restoreLocalBtn = document.getElementById('restoreLocalBtn');
+        const restoreLocalSpinner = document.getElementById('restoreLocalSpinner');
+        const uploadHint = document.getElementById('uploadHint');
+
+        let selectedFile = null;
 
         function showMessage(text, type = 'info') {
             message.textContent = text;
@@ -2177,17 +2445,47 @@ function buildDashboardPage() {
             progressFill.style.width = '0%';
         }
 
+        // 自定义确认对话框
+        function customConfirm(message) {
+            return new Promise((resolve) => {
+                const confirmDialog = document.getElementById('customConfirm');
+                const confirmMessage = document.getElementById('confirmMessage');
+                const confirmOk = document.getElementById('confirmOk');
+                const confirmCancel = document.getElementById('confirmCancel');
+
+                confirmMessage.textContent = message;
+                confirmDialog.classList.add('show');
+
+                function cleanup() {
+                    confirmDialog.classList.remove('show');
+                    confirmOk.removeEventListener('click', handleOk);
+                    confirmCancel.removeEventListener('click', handleCancel);
+                }
+
+                function handleOk() {
+                    cleanup();
+                    resolve(true);
+                }
+
+                function handleCancel() {
+                    cleanup();
+                    resolve(false);
+                }
+
+                confirmOk.addEventListener('click', handleOk);
+                confirmCancel.addEventListener('click', handleCancel);
+            });
+        }
+
         // 加载用户信息
         fetch('/api/current-user')
             .then(r => {
-                console.log('获取用户信息响应状态:', r.status);
                 if (!r.ok) {
                     throw new Error('HTTP ' + r.status);
                 }
                 return r.json();
             })
             .then(data => {
-                console.log('用户信息数据:', data);
                 // SillyTavern 返回的数据可能是 {user: {...}} 或直接是用户对象
                 const user = data.user || data;
                 if (user && user.handle) {
@@ -2195,7 +2493,6 @@ function buildDashboardPage() {
                     document.getElementById('userHandle').textContent = user.handle || '未知';
                     // 保存到 localStorage 用于备份/恢复
                     localStorage.setItem('currentUserHandle', user.handle);
-                    console.log('用户信息已加载:', user.handle);
                 } else {
                     console.error('用户数据格式错误:', data);
                     throw new Error('Invalid user data');
@@ -2210,30 +2507,76 @@ function buildDashboardPage() {
             });
 
         // 从 localStorage 加载配置
-        const savedToken = localStorage.getItem('modelScopeToken');
-        const savedDataset = localStorage.getItem('datasetName');
-        if (savedToken) tokenInput.value = savedToken;
-        if (savedDataset) datasetInput.value = savedDataset;
+        const savedPlatform = localStorage.getItem('backupPlatform') || 'modelscope';
+        const savedModelScopeToken = localStorage.getItem('modelScopeToken');
+        const savedModelScopeDataset = localStorage.getItem('modelScopeDataset');
+        const savedHuggingFaceToken = localStorage.getItem('huggingFaceToken');
+        const savedHuggingFaceDataset = localStorage.getItem('huggingFaceDataset');
+
+        platformSelect.value = savedPlatform;
+        if (savedModelScopeToken) modelScopeTokenInput.value = savedModelScopeToken;
+        if (savedModelScopeDataset) modelScopeDatasetInput.value = savedModelScopeDataset;
+        if (savedHuggingFaceToken) huggingFaceTokenInput.value = savedHuggingFaceToken;
+        if (savedHuggingFaceDataset) huggingFaceDatasetInput.value = savedHuggingFaceDataset;
+
+        // 平台切换
+        function switchPlatform() {
+            const platform = platformSelect.value;
+            localStorage.setItem('backupPlatform', platform);
+
+            if (platform === 'modelscope') {
+                modelScopeConfig.style.display = 'block';
+                huggingFaceConfig.style.display = 'none';
+            } else if (platform === 'huggingface') {
+                modelScopeConfig.style.display = 'none';
+                huggingFaceConfig.style.display = 'block';
+            }
+        }
+
+        platformSelect.addEventListener('change', switchPlatform);
+        switchPlatform(); // 初始化显示
 
         // 保存配置到 localStorage（使用 input 事件实时保存）
-        tokenInput.addEventListener('input', () => {
-            localStorage.setItem('modelScopeToken', tokenInput.value.trim());
+        modelScopeTokenInput.addEventListener('input', () => {
+            localStorage.setItem('modelScopeToken', modelScopeTokenInput.value.trim());
         });
-        tokenInput.addEventListener('blur', () => {
-            localStorage.setItem('modelScopeToken', tokenInput.value.trim());
+        modelScopeTokenInput.addEventListener('blur', () => {
+            localStorage.setItem('modelScopeToken', modelScopeTokenInput.value.trim());
         });
-        datasetInput.addEventListener('input', () => {
-            localStorage.setItem('datasetName', datasetInput.value.trim());
+        modelScopeDatasetInput.addEventListener('input', () => {
+            localStorage.setItem('modelScopeDataset', modelScopeDatasetInput.value.trim());
         });
-        datasetInput.addEventListener('blur', () => {
+        modelScopeDatasetInput.addEventListener('blur', () => {
+            localStorage.setItem('modelScopeDataset', modelScopeDatasetInput.value.trim());
+        });
+
+        huggingFaceTokenInput.addEventListener('input', () => {
+            localStorage.setItem('huggingFaceToken', huggingFaceTokenInput.value.trim());
+        });
+        huggingFaceTokenInput.addEventListener('blur', () => {
+            localStorage.setItem('huggingFaceToken', huggingFaceTokenInput.value.trim());
+        });
+        huggingFaceDatasetInput.addEventListener('input', () => {
+            localStorage.setItem('huggingFaceDataset', huggingFaceDatasetInput.value.trim());
+        });
+        huggingFaceDatasetInput.addEventListener('blur', () => {
+            localStorage.setItem('huggingFaceDataset', huggingFaceDatasetInput.value.trim());
             localStorage.setItem('datasetName', datasetInput.value.trim());
         });
 
         // 备份数据
         backupBtn.addEventListener('click', async () => {
-            const token = tokenInput.value.trim();
-            const dataset = datasetInput.value.trim();
+            const platform = platformSelect.value;
             const userHandle = localStorage.getItem('currentUserHandle');
+
+            let token, dataset;
+            if (platform === 'modelscope') {
+                token = modelScopeTokenInput.value.trim();
+                dataset = modelScopeDatasetInput.value.trim();
+            } else if (platform === 'huggingface') {
+                token = huggingFaceTokenInput.value.trim();
+                dataset = huggingFaceDatasetInput.value.trim();
+            }
 
             if (!token || !dataset) {
                 showMessage('请先配置 Token 和数据集名称', 'error');
@@ -2255,7 +2598,7 @@ function buildDashboardPage() {
                 const response = await fetch('/api/backup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, dataset, userHandle })
+                    body: JSON.stringify({ platform, token, dataset, userHandle })
                 });
 
                 if (!response.ok) {
@@ -2267,27 +2610,21 @@ function buildDashboardPage() {
                 const decoder = new TextDecoder();
                 let buffer = '';
 
-                console.log('开始接收 SSE 数据');
-
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) {
-                        console.log('SSE 流结束');
                         break;
                     }
 
                     buffer += decoder.decode(value, { stream: true });
-                    console.log('收到数据块，当前缓冲区:', buffer.substring(0, 100));
 
                     const lines = buffer.split('\\n');
                     buffer = lines.pop() || ''; // 保留最后一个不完整的行
 
                     for (const line of lines) {
-                        console.log('处理行:', line.substring(0, 50));
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
-                                console.log('解析成功:', data);
 
                                 if (data.success !== undefined) {
                                     hideProgress();
@@ -2323,9 +2660,17 @@ function buildDashboardPage() {
 
         // 恢复数据
         restoreBtn.addEventListener('click', async () => {
-            const token = tokenInput.value.trim();
-            const dataset = datasetInput.value.trim();
+            const platform = platformSelect.value;
             const userHandle = localStorage.getItem('currentUserHandle');
+
+            let token, dataset;
+            if (platform === 'modelscope') {
+                token = modelScopeTokenInput.value.trim();
+                dataset = modelScopeDatasetInput.value.trim();
+            } else if (platform === 'huggingface') {
+                token = huggingFaceTokenInput.value.trim();
+                dataset = huggingFaceDatasetInput.value.trim();
+            }
 
             if (!token || !dataset) {
                 showMessage('请先配置 Token 和数据集名称', 'error');
@@ -2337,31 +2682,75 @@ function buildDashboardPage() {
                 return;
             }
 
-            if (!confirm('恢复数据将覆盖当前所有数据，确定要继续吗？')) {
+            const confirmed = await customConfirm('恢复数据将覆盖当前所有数据，确定要继续吗？');
+            if (!confirmed) {
                 return;
             }
 
+            backupBtn.disabled = true;
             restoreBtn.disabled = true;
             restoreSpinner.style.display = 'inline-block';
+            hideProgress();
             showMessage('正在恢复数据，请稍候...', 'info');
 
             try {
                 const response = await fetch('/api/restore', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token, dataset, userHandle })
+                    body: JSON.stringify({ platform, token, dataset, userHandle })
                 });
 
-                const result = await response.json();
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
 
-                if (response.ok) {
-                    showMessage('恢复成功！', 'success');
-                } else {
-                    showMessage(result.error || '恢复失败', 'error');
+                // 使用 EventSource 接收进度
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\\n');
+                    buffer = lines.pop() || ''; // 保留最后一个不完整的行
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+
+                                if (data.success !== undefined) {
+                                    hideProgress();
+                                    if (data.success) {
+                                        var msg = '恢复成功！文件：' + data.filename + '，大小：' + data.size;
+                                        showMessage(msg, 'success');
+                                    } else {
+                                        showMessage(data.message || '恢复失败', 'error');
+                                    }
+                                } else if (data.progress !== null) {
+                                    // 进度更新
+                                    showProgress(data.message, data.progress);
+                                } else {
+                                    // 普通消息
+                                    showMessage(data.message, 'info');
+                                }
+                            } catch (parseErr) {
+                                console.error('解析 SSE 数据失败:', parseErr);
+                            }
+                        }
+                    }
                 }
             } catch (err) {
+                hideProgress();
                 showMessage('恢复失败：' + err.message, 'error');
             } finally {
+                backupBtn.disabled = false;
                 restoreBtn.disabled = false;
                 restoreSpinner.style.display = 'none';
             }
@@ -2372,12 +2761,133 @@ function buildDashboardPage() {
             window.location.href = '/st';
         });
 
+        // 本地备份上传
+        uploadBackupBtn.addEventListener('click', () => {
+            localBackupFile.click();
+        });
+
+        localBackupFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                if (!file.name.endsWith('.zip')) {
+                    showMessage('请选择 .zip 格式的备份文件', 'error');
+                    return;
+                }
+                selectedFile = file;
+                const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+                uploadHint.textContent = '已选择：' + file.name + ' (' + sizeMB + ' MB)';
+                uploadHint.style.color = '#86efac';
+                restoreLocalBtn.style.display = 'block';
+            }
+        });
+
+        restoreLocalBtn.addEventListener('click', async () => {
+            if (!selectedFile) {
+                showMessage('请先选择备份文件', 'error');
+                return;
+            }
+
+            const userHandle = localStorage.getItem('currentUserHandle');
+            if (!userHandle) {
+                showMessage('无法获取用户信息，请刷新页面', 'error');
+                return;
+            }
+
+            const confirmed = await customConfirm('恢复本地备份将覆盖当前所有数据，确定要继续吗？');
+            if (!confirmed) {
+                return;
+            }
+
+            backupBtn.disabled = true;
+            restoreBtn.disabled = true;
+            restoreLocalBtn.disabled = true;
+            restoreLocalSpinner.style.display = 'inline-block';
+            hideProgress();
+            showMessage('正在上传并恢复本地备份，请稍候...', 'info');
+
+            try {
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+                formData.append('userHandle', userHandle);
+
+                const response = await fetch('/api/restore-local', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+
+                // 使用 EventSource 接收进度
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+
+                                if (data.success !== undefined) {
+                                    hideProgress();
+                                    if (data.success) {
+                                        showMessage('本地备份恢复成功！', 'success');
+                                        // 清除选择的文件
+                                        selectedFile = null;
+                                        localBackupFile.value = '';
+                                        uploadHint.textContent = '支持 .zip 格式的备份文件';
+                                        uploadHint.style.color = '#6b7290';
+                                        restoreLocalBtn.style.display = 'none';
+                                    } else {
+                                        showMessage(data.message || '恢复失败', 'error');
+                                    }
+                                } else if (data.progress !== null) {
+                                    showProgress(data.message, data.progress);
+                                } else {
+                                    showMessage(data.message, 'info');
+                                }
+                            } catch (parseErr) {
+                                console.error('解析 SSE 数据失败:', parseErr);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                hideProgress();
+                showMessage('恢复失败：' + err.message, 'error');
+            } finally {
+                backupBtn.disabled = false;
+                restoreBtn.disabled = false;
+                restoreLocalBtn.disabled = false;
+                restoreLocalSpinner.style.display = 'none';
+            }
+        });
+
         // 退出登录
         document.getElementById('logoutLink').addEventListener('click', async () => {
-            if (confirm('确定要退出登录吗？')) {
+            const confirmed = await customConfirm('确定要退出登录吗？');
+            if (confirmed) {
                 try {
-                    await fetch('/api/users/logout', { method: 'POST' });
-                } catch (e) {}
+                    await fetch('/api/users/logout', {
+                        method: 'POST',
+                        credentials: 'include'
+                    });
+                } catch (e) {
+                    console.error('退出登录失败:', e);
+                }
+                // 无论是否成功，都跳转到登录页
                 window.location.href = '/login';
             }
         });
@@ -2386,10 +2896,69 @@ function buildDashboardPage() {
 </html>`;
 }
 
+// ─── Authentication Middleware ───────────────────────────────────────────────
+
+// 检查用户是否已登录（通过代理到 SillyTavern 的 /api/users/me）
+async function checkAuth(req) {
+    return new Promise((resolve) => {
+        const options = {
+            host: ST_HOST,
+            port: ST_PORT,
+            method: 'GET',
+            path: '/api/users/me',
+            headers: {
+                'Cookie': req.headers.cookie || '',
+            },
+        };
+
+        const proxyReq = http.request(options, (proxyRes) => {
+            let data = '';
+            proxyRes.on('data', chunk => data += chunk);
+            proxyRes.on('end', () => {
+                if (proxyRes.statusCode === 200) {
+                    try {
+                        const user = JSON.parse(data);
+                        resolve({ authenticated: true, user });
+                    } catch {
+                        resolve({ authenticated: false });
+                    }
+                } else {
+                    resolve({ authenticated: false });
+                }
+            });
+        });
+
+        proxyReq.on('error', () => {
+            resolve({ authenticated: false });
+        });
+
+        proxyReq.end();
+    });
+}
+
+// 需要登录的中间件
+async function requireAuth(req, res, next) {
+    const auth = await checkAuth(req);
+    if (!auth.authenticated) {
+        return res.redirect('/login');
+    }
+    req.user = auth.user;
+    next();
+}
+
+// 已登录则重定向到 dashboard
+async function redirectIfAuth(req, res, next) {
+    const auth = await checkAuth(req);
+    if (auth.authenticated) {
+        return res.redirect('/dashboard');
+    }
+    next();
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // Dashboard 页面（登录后的数据管理中心）
-app.get('/dashboard', (_req, res) => {
+app.get('/dashboard', requireAuth, (_req, res) => {
     res.type('html').send(buildDashboardPage());
 });
 
@@ -2478,10 +3047,10 @@ app.get('/bg', (_req, res) => {
 // 页面 HTML 仅在配置变化时重建（缓存）。
 const getLoginPage = makeVersionedCache(() => buildAuthPage('login'));
 const getRegisterPage = makeVersionedCache(() => buildAuthPage('register'));
-app.get('/login', (_req, res) => {
+app.get('/login', redirectIfAuth, (_req, res) => {
     res.type('html').send(getLoginPage());
 });
-app.get('/register', (_req, res) => {
+app.get('/register', redirectIfAuth, (_req, res) => {
     res.type('html').send(getRegisterPage());
 });
 
@@ -2586,11 +3155,80 @@ app.post('/register', jsonParser, formParser, rateLimiter, async (req, res) => {
 
 // ─── Backup & Restore API ────────────────────────────────────────────────────
 
+// 任务队列管理
+class TaskQueue {
+    constructor(maxConcurrent = 2) {
+        this.maxConcurrent = maxConcurrent;
+        this.running = 0;
+        this.queue = [];
+    }
+
+    async add(task) {
+        // 如果已达到最大并发数，加入队列等待
+        if (this.running >= this.maxConcurrent) {
+            await new Promise(resolve => this.queue.push(resolve));
+        }
+
+        this.running++;
+        try {
+            return await task();
+        } finally {
+            this.running--;
+            // 处理队列中的下一个任务
+            if (this.queue.length > 0) {
+                const resolve = this.queue.shift();
+                resolve();
+            }
+        }
+    }
+
+    getStatus() {
+        return {
+            running: this.running,
+            queued: this.queue.length,
+            total: this.running + this.queue.length
+        };
+    }
+}
+
+// 创建备份和恢复任务队列（最多同时 2 个任务）
+const backupQueue = new TaskQueue(2);
+const restoreQueue = new TaskQueue(2);
+
+// 配置限制
+const BACKUP_CONFIG = {
+    MAX_SIZE_MB: 5000,           // 最大备份大小 5GB
+    TIMEOUT_MS: 30 * 60 * 1000,  // 超时时间 30 分钟
+    WARN_SIZE_MB: 1000,          // 警告大小 1GB
+};
+
+// 计算目录大小（递归）
+function getDirectorySize(dirPath) {
+    let totalSize = 0;
+
+    function calculateSize(currentPath) {
+        try {
+            const stats = fs.statSync(currentPath);
+
+            if (stats.isFile()) {
+                totalSize += stats.size;
+            } else if (stats.isDirectory()) {
+                const files = fs.readdirSync(currentPath);
+                for (const file of files) {
+                    calculateSize(path.join(currentPath, file));
+                }
+            }
+        } catch (err) {
+            // 忽略无法访问的文件
+        }
+    }
+
+    calculateSize(dirPath);
+    return totalSize;
+}
+
 // 备份当前用户数据到魔搭社区（使用 Git LFS）
 app.post('/api/backup', jsonParser, async (req, res) => {
-    console.log('[备份] 收到备份请求');
-    console.log('[备份] 请求体:', req.body);
-
     // 设置 SSE 响应头，用于实时推送进度
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -2599,7 +3237,6 @@ app.post('/api/backup', jsonParser, async (req, res) => {
     function sendProgress(message, progress = null) {
         const data = { message, progress };
         res.write(`data: ${JSON.stringify(data)}\n\n`);
-        console.log(`[备份进度] ${message}${progress !== null ? ` (${progress}%)` : ''}`);
     }
 
     function sendComplete(success, message, data = {}) {
@@ -2608,30 +3245,57 @@ app.post('/api/backup', jsonParser, async (req, res) => {
         res.end();
     }
 
-    try {
-        const { token, dataset, userHandle } = req.body;
+    // 检查队列状态
+    const queueStatus = backupQueue.getStatus();
+    if (queueStatus.queued > 0) {
+        sendProgress(`当前有 ${queueStatus.running} 个备份任务正在进行，您的任务排在第 ${queueStatus.queued + 1} 位...`, 0);
+    }
 
-        if (!token || !dataset || !userHandle) {
-            console.log('[备份] 缺少必要参数', { token: !!token, dataset: !!dataset, userHandle: !!userHandle });
-            return sendComplete(false, '缺少必要参数');
-        }
+    // 添加到任务队列
+    await backupQueue.add(async () => {
+        // 设置超时保护
+        const timeoutId = setTimeout(() => {
+            sendComplete(false, `备份超时（超过 ${BACKUP_CONFIG.TIMEOUT_MS / 60000} 分钟），已自动取消`);
+        }, BACKUP_CONFIG.TIMEOUT_MS);
 
-        console.log(`[备份] 数据集: ${dataset}`);
-        console.log(`[备份] 用户: ${userHandle}`);
+        try {
+            const { platform, token, dataset, userHandle } = req.body;
 
-        const userDataDir = path.join(DATA_ROOT, userHandle);
-        if (!fs.existsSync(userDataDir)) {
-            console.log(`[备份] 用户数据目录不存在: ${userDataDir}`);
-            return sendComplete(false, '用户数据目录不存在');
-        }
+            if (!platform || !token || !dataset || !userHandle) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '缺少必要参数');
+            }
 
-        console.log(`[备份] 用户数据目录: ${userDataDir}`);
+            // 验证平台
+            if (platform !== 'modelscope' && platform !== 'huggingface') {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '不支持的备份平台');
+            }
 
-        // 创建临时 zip 文件
-        sendProgress('正在扫描数据文件...', 5);
-        const timestamp = Date.now();
-        const tempZipPath = path.join(__dirname, `backup-${userHandle}-${timestamp}.zip`);
-        console.log(`[备份] 创建临时文件: ${tempZipPath}`);
+            const userDataDir = path.join(DATA_ROOT, userHandle);
+            if (!fs.existsSync(userDataDir)) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '用户数据目录不存在');
+            }
+
+            // 检查数据目录大小
+            sendProgress('正在检查数据大小...', 2);
+            const dirSizeBytes = getDirectorySize(userDataDir);
+            const dirSizeMB = (dirSizeBytes / 1024 / 1024).toFixed(2);
+
+            if (dirSizeBytes > BACKUP_CONFIG.MAX_SIZE_MB * 1024 * 1024) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, `数据目录过大（${dirSizeMB} MB），超过限制（${BACKUP_CONFIG.MAX_SIZE_MB} MB）。请清理后再试。`);
+            }
+
+            if (dirSizeBytes > BACKUP_CONFIG.WARN_SIZE_MB * 1024 * 1024) {
+                sendProgress(`数据目录较大（${dirSizeMB} MB），备份可能需要较长时间...`, 3);
+            }
+
+            // 创建临时 zip 文件
+            sendProgress('正在扫描数据文件...', 5);
+            const timestamp = Date.now();
+            const tempZipPath = path.join(getTempDir(), `backup-${userHandle}-${timestamp}.zip`);
 
         sendProgress('正在压缩数据...', 10);
         const output = fs.createWriteStream(tempZipPath);
@@ -2656,37 +3320,47 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             }
         });
 
+        // 先设置 close 事件监听器，再开始压缩
+        const compressionPromise = new Promise((resolve, reject) => {
+            output.on('close', () => {
+                resolve();
+            });
+            output.on('error', reject);
+            archive.on('error', reject);
+        });
+
         archive.pipe(output);
         archive.directory(userDataDir, false);
         await archive.finalize();
 
-        await new Promise((resolve, reject) => {
-            output.on('close', resolve);
-            output.on('error', reject);
-        });
+        // 等待输出流完全关闭
+        await compressionPromise;
 
         const fileSize = (fs.statSync(tempZipPath).size / 1024 / 1024).toFixed(2);
-        console.log(`[备份] 已创建备份文件: ${tempZipPath} (${fileSize} MB)`);
         sendProgress(`压缩完成，文件大小：${fileSize} MB`, 25);
 
         // 解析数据集名称
         const [namespace, datasetName] = dataset.split('/');
         if (!namespace || !datasetName) {
             fs.unlinkSync(tempZipPath);
-            console.log('[备份] 数据集名称格式错误');
             return sendComplete(false, '数据集名称格式错误，应为：用户名/数据集名称');
         }
 
         // 创建临时目录用于 Git 操作
-        sendProgress('正在连接魔搭社区...', 30);
-        const tempGitDir = path.join(__dirname, `git-temp-${userHandle}-${timestamp}`);
+        const platformName = platform === 'modelscope' ? '魔搭社区' : 'Hugging Face';
+        sendProgress(`正在连接${platformName}...`, 30);
+        const tempGitDir = path.join(getTempDir(), `git-temp-${userHandle}-${timestamp}`);
         fs.mkdirSync(tempGitDir, { recursive: true });
-        console.log(`[备份] 创建临时 Git 目录: ${tempGitDir}`);
 
         try {
-            // 克隆数据集仓库
-            const repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
-            console.log(`[备份] 正在克隆数据集: ${namespace}/${datasetName}`);
+            // 根据平台构建仓库 URL
+            let repoUrl;
+            if (platform === 'modelscope') {
+                repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+            } else if (platform === 'huggingface') {
+                repoUrl = `https://user:${token}@huggingface.co/datasets/${namespace}/${datasetName}`;
+            }
+
             sendProgress('正在克隆数据集仓库...（可能需要几秒）', 35);
 
             try {
@@ -2694,7 +3368,6 @@ app.post('/api/backup', jsonParser, async (req, res) => {
                     stdio: 'pipe',
                     encoding: 'utf8'
                 });
-                console.log('[备份] 克隆成功');
                 sendProgress('克隆完成', 50);
             } catch (cloneErr) {
                 console.error('[备份] 克隆失败:', cloneErr.message);
@@ -2703,7 +3376,6 @@ app.post('/api/backup', jsonParser, async (req, res) => {
 
             // 配置 Git LFS
             sendProgress('正在配置 Git LFS...', 55);
-            console.log('[备份] 配置 Git LFS');
             try {
                 execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
 
@@ -2719,49 +3391,82 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             sendProgress(`正在准备上传 ${fileSize} MB 文件...`, 60);
             const backupFileName = `backup-${userHandle}.zip`;
             const targetPath = path.join(tempGitDir, backupFileName);
-            console.log(`[备份] 复制备份文件到: ${targetPath}`);
             fs.copyFileSync(tempZipPath, targetPath);
 
             // 添加到 Git LFS 跟踪
             sendProgress('正在配置 LFS 跟踪...', 65);
-            console.log('[备份] 配置 Git LFS 跟踪');
             execSync(`git lfs track "*.zip"`, { cwd: tempGitDir, stdio: 'pipe' });
 
             // 提交并推送
             sendProgress('正在添加文件到 Git...', 70);
-            console.log('[备份] 添加文件到 Git');
             execSync('git add .gitattributes', { cwd: tempGitDir, stdio: 'pipe' });
             execSync(`git add "${backupFileName}"`, { cwd: tempGitDir, stdio: 'pipe' });
 
             sendProgress('正在提交更改...', 75);
             const commitMessage = `Backup for ${userHandle} at ${new Date().toISOString()}`;
-            console.log('[备份] 提交更改');
             try {
                 execSync(`git commit -m "${commitMessage}"`, { cwd: tempGitDir, stdio: 'pipe' });
             } catch (commitErr) {
-                console.error('[备份] 提交失败:', commitErr.message);
-                console.error('[备份] 提交错误详情:', commitErr.stderr ? commitErr.stderr.toString() : '无');
                 // 检查是否没有变化需要提交
                 const statusOutput = execSync('git status --porcelain', { cwd: tempGitDir, encoding: 'utf8' });
                 if (!statusOutput.trim()) {
-                    console.log('[备份] 没有变化需要提交，跳过');
+                    // 没有变化需要提交，跳过
                 } else {
+                    console.error('[备份] 提交失败:', commitErr.message);
                     throw commitErr;
                 }
             }
 
             sendProgress(`正在推送 ${fileSize} MB 到远程仓库...（可能需要较长时间）`, 80);
-            console.log('[备份] 正在推送到远程仓库...');
-            execSync('git push origin master', { cwd: tempGitDir, stdio: 'pipe' });
+
+            // 使用 spawn 来实时捕获 git push 输出，避免阻塞
+            await new Promise((resolve, reject) => {
+                const gitPush = spawn('git', ['push', 'origin', 'master'], {
+                    cwd: tempGitDir,
+                    stdio: ['ignore', 'pipe', 'pipe']
+                });
+
+                let lastProgress = 80;
+
+                // Git LFS 的进度信息通常在 stderr
+                gitPush.stderr.on('data', (data) => {
+                    const output = data.toString();
+
+                    // 解析 Git LFS 上传进度
+                    // 格式类似: "Uploading LFS objects:  50% (1/2), 10 MB | 1.2 MB/s"
+                    const progressMatch = output.match(/(\d+)%/);
+                    if (progressMatch) {
+                        const percent = parseInt(progressMatch[1]);
+                        // 将 0-100% 映射到 80-95%
+                        const mappedProgress = 80 + Math.floor(percent * 0.15);
+                        if (mappedProgress > lastProgress) {
+                            lastProgress = mappedProgress;
+                            sendProgress(`正在推送到远程仓库... ${percent}%`, mappedProgress);
+                        }
+                    }
+                });
+
+                gitPush.on('close', (code) => {
+                    if (code === 0) {
+                        resolve();
+                    } else {
+                        reject(new Error(`git push 失败，退出码: ${code}`));
+                    }
+                });
+
+                gitPush.on('error', (err) => {
+                    console.error('[备份] git push 进程错误:', err);
+                    reject(err);
+                });
+            });
 
             sendProgress('推送完成，正在清理临时文件...', 95);
-
-            console.log(`[备份] 用户 ${userHandle} 备份成功`);
 
             // 清理临时文件
             fs.unlinkSync(tempZipPath);
             fs.rmSync(tempGitDir, { recursive: true, force: true });
 
+            clearTimeout(timeoutId);
             sendComplete(true, '备份成功！', {
                 filename: backupFileName,
                 size: fileSize + ' MB'
@@ -2774,59 +3479,153 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);
             if (fs.existsSync(tempGitDir)) fs.rmSync(tempGitDir, { recursive: true, force: true });
 
+            clearTimeout(timeoutId);
             sendComplete(false, 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有写入权限。');
         }
 
-    } catch (err) {
-        console.error('[备份] 错误:', err);
-        sendComplete(false, '备份失败：' + err.message);
-    }
+        } catch (err) {
+            console.error('[备份] 错误:', err);
+            clearTimeout(timeoutId);
+            sendComplete(false, '备份失败：' + err.message);
+        }
+    });
 });
 
 // 从魔搭社区恢复数据（使用 Git LFS）
 app.post('/api/restore', jsonParser, async (req, res) => {
-    console.log('[恢复] 收到恢复请求');
+    // 设置 SSE 响应头，用于实时推送进度
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    try {
-        const { token, dataset, userHandle } = req.body;
+    function sendProgress(message, progress = null) {
+        const data = { message, progress };
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
 
-        if (!token || !dataset || !userHandle) {
-            console.log('[恢复] 缺少必要参数');
-            return res.status(400).json({ error: '缺少必要参数' });
+    function sendComplete(success, message, data = {}) {
+        const result = { success, message, ...data };
+        res.write(`data: ${JSON.stringify(result)}\n\n`);
+        res.end();
+    }
+
+    // 检查队列状态
+    const queueStatus = restoreQueue.getStatus();
+    if (queueStatus.queued > 0) {
+        sendProgress(`当前有 ${queueStatus.running} 个恢复任务正在进行，您的任务排在第 ${queueStatus.queued + 1} 位...`, 0);
+    }
+
+    // 添加到任务队列
+    await restoreQueue.add(async () => {
+        // 设置超时保护
+        const timeoutId = setTimeout(() => {
+            sendComplete(false, `恢复超时（超过 ${BACKUP_CONFIG.TIMEOUT_MS / 60000} 分钟），已自动取消`);
+        }, BACKUP_CONFIG.TIMEOUT_MS);
+
+        try {
+        const { platform, token, dataset, userHandle } = req.body;
+
+        if (!platform || !token || !dataset || !userHandle) {
+            clearTimeout(timeoutId);
+            return sendComplete(false, '缺少必要参数');
         }
 
-        console.log(`[恢复] 数据集: ${dataset}`);
-        console.log(`[恢复] 用户: ${userHandle}`);
+        // 验证平台
+        if (platform !== 'modelscope' && platform !== 'huggingface') {
+            clearTimeout(timeoutId);
+            return sendComplete(false, '不支持的备份平台');
+        }
 
         const userDataDir = path.join(DATA_ROOT, userHandle);
 
         // 解析数据集名称
         const [namespace, datasetName] = dataset.split('/');
         if (!namespace || !datasetName) {
-            return res.status(400).json({ error: '数据集名称格式错误，应为：用户名/数据集名称' });
+            clearTimeout(timeoutId);
+            return sendComplete(false, '数据集名称格式错误，应为：用户名/数据集名称');
         }
 
         // 创建临时目录用于 Git 操作
+        sendProgress('正在准备恢复...', 5);
         const timestamp = Date.now();
-        const tempGitDir = path.join(__dirname, `git-restore-${userHandle}-${timestamp}`);
+        const tempGitDir = path.join(getTempDir(), `git-restore-${userHandle}-${timestamp}`);
         fs.mkdirSync(tempGitDir, { recursive: true });
 
         try {
-            // 克隆数据集仓库
-            const repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
-            console.log(`[恢复] 正在克隆数据集: ${namespace}/${datasetName}`);
+            // 根据平台构建仓库 URL
+            let repoUrl;
+            const platformName = platform === 'modelscope' ? '魔搭社区' : 'Hugging Face';
+            if (platform === 'modelscope') {
+                repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+            } else if (platform === 'huggingface') {
+                repoUrl = `https://user:${token}@huggingface.co/datasets/${namespace}/${datasetName}`;
+            }
 
-            const { execSync } = require('child_process');
+            sendProgress(`正在连接${platformName}...`, 10);
 
-            // 克隆仓库
-            execSync(`git clone "${repoUrl}" "${tempGitDir}"`, {
-                stdio: 'pipe',
-                encoding: 'utf8'
+            try {
+                execSync(`git clone "${repoUrl}" "${tempGitDir}"`, {
+                    stdio: 'pipe',
+                    encoding: 'utf8'
+                });
+                sendProgress('克隆完成', 30);
+            } catch (cloneErr) {
+                console.error('[恢复] 克隆失败:', cloneErr.message);
+                throw new Error('克隆仓库失败：' + cloneErr.message);
+            }
+
+            // 配置 Git LFS
+            sendProgress('正在配置 Git LFS...', 35);
+            try {
+                execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
+            } catch (lfsErr) {
+                console.error('[恢复] Git LFS 安装失败:', lfsErr.message);
+                throw new Error('Git LFS 未安装或配置失败');
+            }
+
+            // 拉取 LFS 文件
+            sendProgress('正在下载备份文件...（可能需要较长时间）', 40);
+
+            // 使用 spawn 来实时捕获 git lfs pull 输出
+            await new Promise((resolve, reject) => {
+                const gitLfsPull = spawn('git', ['lfs', 'pull'], {
+                    cwd: tempGitDir,
+                    stdio: ['ignore', 'pipe', 'pipe']
+                });
+
+                let lastProgress = 40;
+
+                gitLfsPull.stderr.on('data', (data) => {
+                    const output = data.toString();
+
+                    // 解析 Git LFS 下载进度
+                    const progressMatch = output.match(/(\d+)%/);
+                    if (progressMatch) {
+                        const percent = parseInt(progressMatch[1]);
+                        // 将 0-100% 映射到 40-60%
+                        const mappedProgress = 40 + Math.floor(percent * 0.20);
+                        if (mappedProgress > lastProgress) {
+                            lastProgress = mappedProgress;
+                            sendProgress(`正在下载备份文件... ${percent}%`, mappedProgress);
+                        }
+                    }
+                });
+
+                gitLfsPull.on('close', (code) => {
+                    if (code === 0) {
+                        resolve();
+                    } else {
+                        reject(new Error(`git lfs pull 失败，退出码: ${code}`));
+                    }
+                });
+
+                gitLfsPull.on('error', (err) => {
+                    console.error('[恢复] git lfs pull 进程错误:', err);
+                    reject(err);
+                });
             });
 
-            // 配置 Git LFS 并拉取大文件
-            execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
-            execSync('git lfs pull', { cwd: tempGitDir, stdio: 'pipe' });
+            sendProgress('下载完成', 60);
 
             // 查找备份文件
             const backupFileName = `backup-${userHandle}.zip`;
@@ -2834,28 +3633,32 @@ app.post('/api/restore', jsonParser, async (req, res) => {
 
             if (!fs.existsSync(backupFilePath)) {
                 fs.rmSync(tempGitDir, { recursive: true, force: true });
-                return res.status(404).json({ error: `未找到备份文件: ${backupFileName}` });
+                return sendComplete(false, `未找到备份文件: ${backupFileName}`);
             }
 
-            console.log(`[恢复] 找到备份文件: ${backupFileName}`);
+            const fileSize = (fs.statSync(backupFilePath).size / 1024 / 1024).toFixed(2);
+            sendProgress(`找到备份文件，大小：${fileSize} MB`, 65);
 
             // 备份当前数据（以防恢复失败）
-            const backupDir = path.join(__dirname, `backup-before-restore-${userHandle}-${timestamp}`);
+            sendProgress('正在备份当前数据...', 70);
+            const backupDir = path.join(getTempDir(), `backup-before-restore-${userHandle}-${timestamp}`);
             if (fs.existsSync(userDataDir)) {
-                console.log(`[恢复] 备份当前数据到: ${backupDir}`);
                 fs.cpSync(userDataDir, backupDir, { recursive: true });
             }
 
             try {
                 // 清空当前数据目录
+                sendProgress('正在清空当前数据...', 75);
                 if (fs.existsSync(userDataDir)) {
                     fs.rmSync(userDataDir, { recursive: true, force: true });
                 }
                 fs.mkdirSync(userDataDir, { recursive: true });
 
                 // 解压恢复数据
-                console.log(`[恢复] 正在解压备份文件...`);
+                sendProgress('正在解压备份文件...', 80);
                 await extract(backupFilePath, { dir: userDataDir });
+
+                sendProgress('解压完成，正在清理临时文件...', 95);
 
                 // 清理临时文件
                 fs.rmSync(tempGitDir, { recursive: true, force: true });
@@ -2863,8 +3666,11 @@ app.post('/api/restore', jsonParser, async (req, res) => {
                     fs.rmSync(backupDir, { recursive: true, force: true });
                 }
 
-                console.log(`[恢复] 用户 ${userHandle} 恢复成功`);
-                return res.json({ success: true, message: '恢复成功' });
+                clearTimeout(timeoutId);
+                sendComplete(true, '恢复成功！', {
+                    filename: backupFileName,
+                    size: fileSize + ' MB'
+                });
 
             } catch (extractErr) {
                 // 恢复失败，回滚到备份
@@ -2888,15 +3694,159 @@ app.post('/api/restore', jsonParser, async (req, res) => {
             // 清理临时文件
             if (fs.existsSync(tempGitDir)) fs.rmSync(tempGitDir, { recursive: true, force: true });
 
-            return res.status(500).json({
-                error: 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有读取权限。'
-            });
+            clearTimeout(timeoutId);
+            sendComplete(false, 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有读取权限。');
         }
 
-    } catch (err) {
-        console.error('[恢复] 错误:', err);
-        return res.status(500).json({ error: '恢复失败：' + err.message });
+        } catch (err) {
+            console.error('[恢复] 错误:', err);
+            clearTimeout(timeoutId);
+            sendComplete(false, '恢复失败：' + err.message);
+        }
+    });
+});
+
+// 配置 multer 用于文件上传
+const upload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            cb(null, getTempDir());
+        },
+        filename: (req, file, cb) => {
+            const timestamp = Date.now();
+            cb(null, `upload-${timestamp}-${file.originalname}`);
+        }
+    }),
+    limits: {
+        fileSize: BACKUP_CONFIG.MAX_SIZE_MB * 1024 * 1024 // 使用相同的大小限制
+    },
+    fileFilter: (req, file, cb) => {
+        if (file.originalname.endsWith('.zip')) {
+            cb(null, true);
+        } else {
+            cb(new Error('只支持 .zip 格式的备份文件'));
+        }
     }
+});
+
+// 恢复本地备份
+app.post('/api/restore-local', upload.single('file'), async (req, res) => {
+    // 设置 SSE 响应头，用于实时推送进度
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    function sendProgress(message, progress = null) {
+        const data = { message, progress };
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
+
+    function sendComplete(success, message, data = {}) {
+        const result = { success, message, ...data };
+        res.write(`data: ${JSON.stringify(result)}\n\n`);
+        res.end();
+    }
+
+    // 检查队列状态
+    const queueStatus = restoreQueue.getStatus();
+    if (queueStatus.queued > 0) {
+        sendProgress(`当前有 ${queueStatus.running} 个恢复任务正在进行，您的任务排在第 ${queueStatus.queued + 1} 位...`, 0);
+    }
+
+    // 添加到任务队列
+    await restoreQueue.add(async () => {
+        // 设置超时保护
+        const timeoutId = setTimeout(() => {
+            sendComplete(false, `恢复超时（超过 ${BACKUP_CONFIG.TIMEOUT_MS / 60000} 分钟），已自动取消`);
+        }, BACKUP_CONFIG.TIMEOUT_MS);
+
+        let uploadedFilePath = null;
+
+        try {
+            const { userHandle } = req.body;
+
+            if (!userHandle) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '缺少必要参数');
+            }
+
+            if (!req.file) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '未上传备份文件');
+            }
+
+            uploadedFilePath = req.file.path;
+            const fileSize = (req.file.size / 1024 / 1024).toFixed(2);
+
+            sendProgress('正在准备恢复...', 5);
+            sendProgress(`已上传备份文件，大小：${fileSize} MB`, 10);
+
+            const userDataDir = path.join(DATA_ROOT, userHandle);
+            const timestamp = Date.now();
+
+            // 备份当前数据（以防恢复失败）
+            sendProgress('正在备份当前数据...', 20);
+            const backupDir = path.join(getTempDir(), `backup-before-restore-${userHandle}-${timestamp}`);
+            if (fs.existsSync(userDataDir)) {
+                fs.cpSync(userDataDir, backupDir, { recursive: true });
+            }
+
+            try {
+                // 清空当前数据目录
+                sendProgress('正在清空当前数据...', 40);
+                if (fs.existsSync(userDataDir)) {
+                    fs.rmSync(userDataDir, { recursive: true, force: true });
+                }
+                fs.mkdirSync(userDataDir, { recursive: true });
+
+                // 解压恢复数据
+                sendProgress('正在解压备份文件...', 60);
+                await extract(uploadedFilePath, { dir: userDataDir });
+
+                sendProgress('解压完成，正在清理临时文件...', 90);
+
+                // 清理临时文件
+                if (fs.existsSync(uploadedFilePath)) {
+                    fs.unlinkSync(uploadedFilePath);
+                }
+                if (fs.existsSync(backupDir)) {
+                    fs.rmSync(backupDir, { recursive: true, force: true });
+                }
+
+                clearTimeout(timeoutId);
+                sendComplete(true, '本地备份恢复成功！', {
+                    filename: req.file.originalname,
+                    size: fileSize + ' MB'
+                });
+
+            } catch (extractErr) {
+                // 恢复失败，回滚到备份
+                console.error('[恢复本地] 解压失败，正在回滚:', extractErr);
+                if (fs.existsSync(userDataDir)) {
+                    fs.rmSync(userDataDir, { recursive: true, force: true });
+                }
+                if (fs.existsSync(backupDir)) {
+                    fs.cpSync(backupDir, userDataDir, { recursive: true });
+                    fs.rmSync(backupDir, { recursive: true, force: true });
+                }
+                if (fs.existsSync(uploadedFilePath)) {
+                    fs.unlinkSync(uploadedFilePath);
+                }
+                throw extractErr;
+            }
+
+        } catch (err) {
+            console.error('[恢复本地] 错误:', err);
+
+            // 清理上传的文件
+            if (uploadedFilePath && fs.existsSync(uploadedFilePath)) {
+                fs.unlinkSync(uploadedFilePath);
+            }
+
+            clearTimeout(timeoutId);
+            sendComplete(false, '恢复失败：' + err.message);
+        }
+    });
 });
 
 // 获取当前登录用户的 handle（从 cookie 中解析）
@@ -2945,6 +3895,7 @@ mountAdmin(app, {
     background: BACKGROUND, saveBackgroundConfig,
     card: CARD, saveCardConfig,
     friendLinks: FRIEND_LINKS, saveFriendLinksConfig,
+    backupTempConfig: BACKUP_TEMP_CONFIG, saveBackupConfig, getTempDir,
     mdRendererJs: MD_RENDERER_JS,
 });
 
@@ -2963,7 +3914,7 @@ const proxyAgent = new http.Agent({
 });
 
 // 根路径重定向到 dashboard
-app.get('/', (req, res) => {
+app.get('/', requireAuth, (req, res) => {
     res.redirect('/dashboard');
 });
 
@@ -3068,7 +4019,13 @@ app.use('/csrf-token', (req, res) => {
 });
 
 // /st 及其子路径代理到 SillyTavern
-app.use('/st', (req, res) => {
+app.use('/st', async (req, res, next) => {
+    // 检查是否已登录
+    const auth = await checkAuth(req);
+    if (!auth.authenticated) {
+        return res.redirect('/login');
+    }
+
     // 去掉 /st 前缀，转发到 SillyTavern 的根路径
     const targetPath = req.originalUrl.replace(/^\/st/, '') || '/';
     proxyToST(req, res, targetPath);
@@ -3210,6 +4167,10 @@ async function main() {
     const existingKeys = await storage.keys(x => x.key.startsWith(KEY_PREFIX));
     const existingHandles = existingKeys.map(k => k.replace(KEY_PREFIX, ''));
     console.log(`已有用户 (${existingHandles.length}): ${existingHandles.join(', ') || '(无)'}`);
+
+    // 清理旧的临时文件
+    console.log(`临时文件目录: ${getTempDir()}`);
+    cleanupOldTempFiles();
 
     // 异步获取服务器公网 IP/地区（不阻塞启动）
     fetchServerInfo();
