@@ -521,6 +521,22 @@ const ADMIN_HTML_BODY = `
         </div>
 
         <div class="section panel">
+            <h2>🏰 SillyTavern 设置</h2>
+            <div class="err" id="stErr"></div>
+            <form id="stForm">
+                <div class="row">
+                    <div class="field">
+                        <label for="stPath">SillyTavern 安装目录（留空 = 默认 ../SillyTavern）</label>
+                        <input type="text" id="stPath" placeholder="例如：/data/SillyTavern">
+                        <div class="hint">绝对路径或相对于 st-register 的路径，修改后需重启服务</div>
+                    </div>
+                    <div class="checkline" style="margin-bottom:2px;" id="stCurrentPath">当前路径：加载中...</div>
+                    <button class="btn" type="submit" id="stBtn">保存</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="section panel">
             <h2>👥 用户列表 <span class="muted" id="userCount" style="font-weight:400;font-size:12px;"></span></h2>
             <div class="tablewrap">
                 <table>
@@ -592,7 +608,7 @@ async function refreshSession() {
 async function showDash() {
     loginView.classList.add('hidden'); disabledView.classList.add('hidden');
     dashView.classList.remove('hidden');
-    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadBackground(), loadCard(), loadFriendLinks()]);
+    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadSTConfig(), loadBackground(), loadCard(), loadFriendLinks()]);
 }
 
 // ── 登录 / 登出 ──
@@ -730,6 +746,28 @@ $('backupForm').addEventListener('submit', async (e) => {
     if (!r.ok) { showErr($('backupErr'), (r.data && r.data.error) || '保存失败。'); return; }
     toast('备份设置已保存（重启服务后生效）');
     await loadBackupConfig();
+});
+
+// ── SillyTavern 路径设置 ──
+async function loadSTConfig() {
+    const { ok, data } = await api('GET', '/admin/api/st-config');
+    if (!ok || !data) return;
+    $('stPath').value = data.path || '';
+    var currentPath = $('stCurrentPath');
+    if (currentPath) {
+        currentPath.textContent = '当前路径：' + (data.currentPath || '../SillyTavern');
+    }
+}
+$('stForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); hideErr($('stErr'));
+    const btn = $('stBtn'); btn.disabled = true;
+    const r = await api('PUT', '/admin/api/st-config', {
+        path: $('stPath').value.trim(),
+    });
+    btn.disabled = false;
+    if (!r.ok) { showErr($('stErr'), (r.data && r.data.error) || '保存失败。'); return; }
+    toast('SillyTavern 路径已保存（重启服务后生效）');
+    await loadSTConfig();
 });
 
 // ── 背景设置 ──
@@ -998,6 +1036,7 @@ export function mountAdmin(app, deps) {
         card, saveCardConfig,
         friendLinks, saveFriendLinksConfig,
         backupTempConfig, saveBackupConfig, getTempDir,
+        sillyTavernConfig, saveSillyTavernConfig, ST_DIR,
         mdRendererJs,
     } = deps;
 
@@ -1320,6 +1359,46 @@ export function mountAdmin(app, deps) {
             });
         } catch (err) {
             console.error('[后台] 保存备份配置失败:', err);
+            return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
+        }
+    });
+
+    // 获取 SillyTavern 路径配置
+    app.get('/admin/api/st-config', requireAdmin, (_req, res) => {
+        try {
+            return res.json({
+                path: sillyTavernConfig.path || '',
+                currentPath: ST_DIR,
+            });
+        } catch (err) {
+            console.error('[后台] 读取 SillyTavern 配置失败:', err);
+            return res.status(500).json({ error: '读取失败。' });
+        }
+    });
+
+    // 保存 SillyTavern 路径配置（写回 config.yaml）
+    app.put('/admin/api/st-config', requireAdmin, jsonParser, (req, res) => {
+        try {
+            const body = req.body || {};
+            const patch = {};
+
+            if (typeof body.path === 'string') {
+                patch.path = body.path.trim();
+            }
+
+            if (Object.keys(patch).length === 0) {
+                return res.status(400).json({ error: '没有可保存的内容。' });
+            }
+
+            saveSillyTavernConfig(patch);
+            console.log('[后台] 已更新 SillyTavern 路径:', patch.path || '默认');
+            return res.json({
+                ok: true,
+                path: patch.path,
+                currentPath: ST_DIR,
+            });
+        } catch (err) {
+            console.error('[后台] 保存 SillyTavern 配置失败:', err);
             return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
         }
     });

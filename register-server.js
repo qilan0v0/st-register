@@ -39,8 +39,6 @@ import { mountAdmin } from './admin.js';
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ST_DIR = path.join(__dirname, '..', 'SillyTavern');
-const ST_CONFIG_PATH = path.join(ST_DIR, 'config.yaml');
 const OWN_CONFIG_PATH = path.join(__dirname, 'config.yaml');
 
 // 读取 st-register 自己的配置（不影响 SillyTavern 的 config.yaml）
@@ -56,9 +54,24 @@ try {
     process.exit(1);
 }
 
+// 获取 SillyTavern 目录路径（从配置文件读取，或使用默认值）
+const stPath = (ownConfig.sillyTavern && ownConfig.sillyTavern.path) || '';
+const ST_DIR = stPath
+    ? (path.isAbsolute(stPath) ? stPath : path.resolve(__dirname, stPath))
+    : path.join(__dirname, '..', 'SillyTavern');
+const ST_CONFIG_PATH = path.join(ST_DIR, 'config.yaml');
+
+console.log(`SillyTavern 目录: ${ST_DIR}`);
+
 // 读取 SillyTavern 的配置（仅用于定位数据目录与内部端口，只读不改）
 let stConfig;
 try {
+    if (!fs.existsSync(ST_CONFIG_PATH)) {
+        console.error(`错误: 未找到 SillyTavern 配置文件: ${ST_CONFIG_PATH}`);
+        console.error(`请在 config.yaml 中设置正确的 sillyTavern.path 路径`);
+        console.error(`例如: sillyTavern.path: "/data/SillyTavern"`);
+        process.exit(1);
+    }
     stConfig = yaml.parse(fs.readFileSync(ST_CONFIG_PATH, 'utf8'));
 } catch (err) {
     console.error('无法读取 SillyTavern config.yaml:', err.message);
@@ -135,6 +148,18 @@ function saveBackupConfig(patch) {
         const v = Math.max(0, Math.floor(patch.autoCleanupHours));
         doc.setIn(['backup', 'autoCleanupHours'], v);
         BACKUP_TEMP_CONFIG.autoCleanupHours = v;
+    }
+
+    fs.writeFileSync(OWN_CONFIG_PATH, doc.toString());
+}
+
+// 保存 SillyTavern 路径配置到 config.yaml
+function saveSillyTavernConfig(patch) {
+    const raw = fs.existsSync(OWN_CONFIG_PATH) ? fs.readFileSync(OWN_CONFIG_PATH, 'utf8') : '';
+    const doc = yaml.parseDocument(raw);
+
+    if (typeof patch.path === 'string') {
+        doc.setIn(['sillyTavern', 'path'], patch.path);
     }
 
     fs.writeFileSync(OWN_CONFIG_PATH, doc.toString());
@@ -3896,6 +3921,7 @@ mountAdmin(app, {
     card: CARD, saveCardConfig,
     friendLinks: FRIEND_LINKS, saveFriendLinksConfig,
     backupTempConfig: BACKUP_TEMP_CONFIG, saveBackupConfig, getTempDir,
+    sillyTavernConfig: { path: stPath }, saveSillyTavernConfig, ST_DIR,
     mdRendererJs: MD_RENDERER_JS,
 });
 
