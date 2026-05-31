@@ -2348,6 +2348,20 @@ function buildDashboardPage() {
             </div>
         </div>
 
+        <div class="section" id="gitInfoConfig" style="display:none;">
+            <div class="section-title">Git 提交信息</div>
+            <div class="config-section">
+                <label for="gitUserName">Git 用户名</label>
+                <input type="text" id="gitUserName" placeholder="例如：YourName">
+                <div class="hint">用于 Git 提交记录</div>
+            </div>
+            <div class="config-section">
+                <label for="gitUserEmail">Git 邮箱</label>
+                <input type="email" id="gitUserEmail" placeholder="例如：your@email.com">
+                <div class="hint">用于 Git 提交记录，Hugging Face 可能需要真实邮箱</div>
+            </div>
+        </div>
+
         <div class="section" id="modelScopeConfig">
             <div class="section-title">魔搭社区配置</div>
             <div class="config-section">
@@ -2438,10 +2452,13 @@ function buildDashboardPage() {
         const platformSelect = document.getElementById('backupPlatform');
         const modelScopeConfig = document.getElementById('modelScopeConfig');
         const huggingFaceConfig = document.getElementById('huggingFaceConfig');
+        const gitInfoConfig = document.getElementById('gitInfoConfig');
         const modelScopeTokenInput = document.getElementById('modelScopeToken');
         const modelScopeDatasetInput = document.getElementById('modelScopeDataset');
         const huggingFaceTokenInput = document.getElementById('huggingFaceToken');
         const huggingFaceDatasetInput = document.getElementById('huggingFaceDataset');
+        const gitUserNameInput = document.getElementById('gitUserName');
+        const gitUserEmailInput = document.getElementById('gitUserEmail');
         const progressContainer = document.getElementById('progressContainer');
         const progressFill = document.getElementById('progressFill');
         const progressText = document.getElementById('progressText');
@@ -2457,6 +2474,16 @@ function buildDashboardPage() {
             message.textContent = text;
             message.className = 'message show ' + type;
             setTimeout(() => message.classList.remove('show'), 5000);
+        }
+
+        function showPersistentMessage(text, type = 'info') {
+            message.textContent = text;
+            message.className = 'message show ' + type;
+            // 不设置 setTimeout，消息会一直显示
+        }
+
+        function hideMessage() {
+            message.classList.remove('show');
         }
 
         function showProgress(text, percent) {
@@ -2537,12 +2564,16 @@ function buildDashboardPage() {
         const savedModelScopeDataset = localStorage.getItem('modelScopeDataset');
         const savedHuggingFaceToken = localStorage.getItem('huggingFaceToken');
         const savedHuggingFaceDataset = localStorage.getItem('huggingFaceDataset');
+        const savedGitUserName = localStorage.getItem('gitUserName');
+        const savedGitUserEmail = localStorage.getItem('gitUserEmail');
 
         platformSelect.value = savedPlatform;
         if (savedModelScopeToken) modelScopeTokenInput.value = savedModelScopeToken;
         if (savedModelScopeDataset) modelScopeDatasetInput.value = savedModelScopeDataset;
         if (savedHuggingFaceToken) huggingFaceTokenInput.value = savedHuggingFaceToken;
         if (savedHuggingFaceDataset) huggingFaceDatasetInput.value = savedHuggingFaceDataset;
+        if (savedGitUserName) gitUserNameInput.value = savedGitUserName;
+        if (savedGitUserEmail) gitUserEmailInput.value = savedGitUserEmail;
 
         // 平台切换
         function switchPlatform() {
@@ -2552,9 +2583,11 @@ function buildDashboardPage() {
             if (platform === 'modelscope') {
                 modelScopeConfig.style.display = 'block';
                 huggingFaceConfig.style.display = 'none';
+                gitInfoConfig.style.display = 'none';
             } else if (platform === 'huggingface') {
                 modelScopeConfig.style.display = 'none';
                 huggingFaceConfig.style.display = 'block';
+                gitInfoConfig.style.display = 'block';
             }
         }
 
@@ -2586,13 +2619,27 @@ function buildDashboardPage() {
         });
         huggingFaceDatasetInput.addEventListener('blur', () => {
             localStorage.setItem('huggingFaceDataset', huggingFaceDatasetInput.value.trim());
-            localStorage.setItem('datasetName', datasetInput.value.trim());
+        });
+
+        gitUserNameInput.addEventListener('input', () => {
+            localStorage.setItem('gitUserName', gitUserNameInput.value.trim());
+        });
+        gitUserNameInput.addEventListener('blur', () => {
+            localStorage.setItem('gitUserName', gitUserNameInput.value.trim());
+        });
+        gitUserEmailInput.addEventListener('input', () => {
+            localStorage.setItem('gitUserEmail', gitUserEmailInput.value.trim());
+        });
+        gitUserEmailInput.addEventListener('blur', () => {
+            localStorage.setItem('gitUserEmail', gitUserEmailInput.value.trim());
         });
 
         // 备份数据
         backupBtn.addEventListener('click', async () => {
             const platform = platformSelect.value;
             const userHandle = localStorage.getItem('currentUserHandle');
+            const gitUserName = gitUserNameInput.value.trim();
+            const gitUserEmail = gitUserEmailInput.value.trim();
 
             let token, dataset;
             if (platform === 'modelscope') {
@@ -2608,6 +2655,12 @@ function buildDashboardPage() {
                 return;
             }
 
+            // 只有 Hugging Face 需要 Git 用户信息
+            if (platform === 'huggingface' && (!gitUserName || !gitUserEmail)) {
+                showMessage('请先配置 Git 用户名和邮箱', 'error');
+                return;
+            }
+
             if (!userHandle) {
                 showMessage('无法获取用户信息，请刷新页面', 'error');
                 return;
@@ -2617,13 +2670,13 @@ function buildDashboardPage() {
             restoreBtn.disabled = true;
             backupSpinner.style.display = 'inline-block';
             hideProgress();
-            showMessage('正在备份数据，请稍候...', 'info');
+            showPersistentMessage('正在备份数据，请稍候...', 'info');
 
             try {
                 const response = await fetch('/api/backup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ platform, token, dataset, userHandle })
+                    body: JSON.stringify({ platform, token, dataset, userHandle, gitUserName, gitUserEmail })
                 });
 
                 if (!response.ok) {
@@ -2655,16 +2708,16 @@ function buildDashboardPage() {
                                     hideProgress();
                                     if (data.success) {
                                         var msg = '备份成功！文件：' + data.filename + '，大小：' + data.size;
-                                        showMessage(msg, 'success');
+                                        showPersistentMessage(msg, 'success');
                                     } else {
-                                        showMessage(data.message || '备份失败', 'error');
+                                        showPersistentMessage(data.message || '备份失败', 'error');
                                     }
                                 } else if (data.progress !== null) {
                                     // 进度更新
                                     showProgress(data.message, data.progress);
                                 } else {
                                     // 普通消息
-                                    showMessage(data.message, 'info');
+                                    showPersistentMessage(data.message, 'info');
                                 }
                             } catch (e) {
                                 console.error('解析 SSE 数据失败:', e, line);
@@ -2675,7 +2728,7 @@ function buildDashboardPage() {
 
             } catch (err) {
                 hideProgress();
-                showMessage('备份失败：' + err.message, 'error');
+                showPersistentMessage('备份失败：' + err.message, 'error');
             } finally {
                 backupBtn.disabled = false;
                 restoreBtn.disabled = false;
@@ -2716,7 +2769,7 @@ function buildDashboardPage() {
             restoreBtn.disabled = true;
             restoreSpinner.style.display = 'inline-block';
             hideProgress();
-            showMessage('正在恢复数据，请稍候...', 'info');
+            showPersistentMessage('正在恢复数据，请稍候...', 'info');
 
             try {
                 const response = await fetch('/api/restore', {
@@ -2754,16 +2807,16 @@ function buildDashboardPage() {
                                     hideProgress();
                                     if (data.success) {
                                         var msg = '恢复成功！文件：' + data.filename + '，大小：' + data.size;
-                                        showMessage(msg, 'success');
+                                        showPersistentMessage(msg, 'success');
                                     } else {
-                                        showMessage(data.message || '恢复失败', 'error');
+                                        showPersistentMessage(data.message || '恢复失败', 'error');
                                     }
                                 } else if (data.progress !== null) {
                                     // 进度更新
                                     showProgress(data.message, data.progress);
                                 } else {
                                     // 普通消息
-                                    showMessage(data.message, 'info');
+                                    showPersistentMessage(data.message, 'info');
                                 }
                             } catch (parseErr) {
                                 console.error('解析 SSE 数据失败:', parseErr);
@@ -2773,7 +2826,7 @@ function buildDashboardPage() {
                 }
             } catch (err) {
                 hideProgress();
-                showMessage('恢复失败：' + err.message, 'error');
+                showPersistentMessage('恢复失败：' + err.message, 'error');
             } finally {
                 backupBtn.disabled = false;
                 restoreBtn.disabled = false;
@@ -2828,7 +2881,7 @@ function buildDashboardPage() {
             restoreLocalBtn.disabled = true;
             restoreLocalSpinner.style.display = 'inline-block';
             hideProgress();
-            showMessage('正在上传并恢复本地备份，请稍候...', 'info');
+            showPersistentMessage('正在上传并恢复本地备份，请稍候...', 'info');
 
             try {
                 const formData = new FormData();
@@ -2868,7 +2921,7 @@ function buildDashboardPage() {
                                 if (data.success !== undefined) {
                                     hideProgress();
                                     if (data.success) {
-                                        showMessage('本地备份恢复成功！', 'success');
+                                        showPersistentMessage('本地备份恢复成功！', 'success');
                                         // 清除选择的文件
                                         selectedFile = null;
                                         localBackupFile.value = '';
@@ -2876,12 +2929,12 @@ function buildDashboardPage() {
                                         uploadHint.style.color = '#6b7290';
                                         restoreLocalBtn.style.display = 'none';
                                     } else {
-                                        showMessage(data.message || '恢复失败', 'error');
+                                        showPersistentMessage(data.message || '恢复失败', 'error');
                                     }
                                 } else if (data.progress !== null) {
                                     showProgress(data.message, data.progress);
                                 } else {
-                                    showMessage(data.message, 'info');
+                                    showPersistentMessage(data.message, 'info');
                                 }
                             } catch (parseErr) {
                                 console.error('解析 SSE 数据失败:', parseErr);
@@ -2891,7 +2944,7 @@ function buildDashboardPage() {
                 }
             } catch (err) {
                 hideProgress();
-                showMessage('恢复失败：' + err.message, 'error');
+                showPersistentMessage('恢复失败：' + err.message, 'error');
             } finally {
                 backupBtn.disabled = false;
                 restoreBtn.disabled = false;
@@ -3284,11 +3337,17 @@ app.post('/api/backup', jsonParser, async (req, res) => {
         }, BACKUP_CONFIG.TIMEOUT_MS);
 
         try {
-            const { platform, token, dataset, userHandle } = req.body;
+            const { platform, token, dataset, userHandle, gitUserName, gitUserEmail } = req.body;
 
             if (!platform || !token || !dataset || !userHandle) {
                 clearTimeout(timeoutId);
                 return sendComplete(false, '缺少必要参数');
+            }
+
+            // 只有 Hugging Face 需要用户提供 Git 用户信息
+            if (platform === 'huggingface' && (!gitUserName || !gitUserEmail)) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '缺少 Git 用户信息');
             }
 
             // 验证平台
@@ -3387,28 +3446,39 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             }
 
             sendProgress('正在克隆数据集仓库...（可能需要几秒）', 35);
+            console.log(`[备份] 克隆仓库: ${namespace}/${datasetName}`);
 
             try {
-                execSync(`git clone --depth 1 "${repoUrl}" "${tempGitDir}"`, {
+                const cloneOutput = execSync(`git clone --depth 1 "${repoUrl}" "${tempGitDir}"`, {
                     stdio: 'pipe',
                     encoding: 'utf8'
                 });
+                console.log('[备份] 克隆输出:', cloneOutput);
                 sendProgress('克隆完成', 50);
             } catch (cloneErr) {
                 console.error('[备份] 克隆失败:', cloneErr.message);
+                if (cloneErr.stderr) console.error('[备份] 克隆 stderr:', cloneErr.stderr);
+                if (cloneErr.stdout) console.error('[备份] 克隆 stdout:', cloneErr.stdout);
                 throw new Error('克隆仓库失败：' + cloneErr.message);
             }
 
             // 配置 Git LFS
             sendProgress('正在配置 Git LFS...', 55);
+            console.log('[备份] 配置 Git LFS...');
             try {
                 execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
+                console.log('[备份] Git LFS 安装成功');
 
                 // 配置 Git 用户信息（提交需要）
-                execSync('git config user.name "ST-Register"', { cwd: tempGitDir, stdio: 'pipe' });
-                execSync('git config user.email "backup@st-register.local"', { cwd: tempGitDir, stdio: 'pipe' });
+                // Hugging Face 使用用户提供的信息；魔搭社区使用默认值
+                const commitName = (platform === 'huggingface' && gitUserName) ? gitUserName : 'ST-Register';
+                const commitEmail = (platform === 'huggingface' && gitUserEmail) ? gitUserEmail : 'backup@st-register.local';
+                execSync(`git config user.name "${commitName}"`, { cwd: tempGitDir, stdio: 'pipe' });
+                execSync(`git config user.email "${commitEmail}"`, { cwd: tempGitDir, stdio: 'pipe' });
+                console.log(`[备份] Git 用户信息配置成功: ${commitName} <${commitEmail}>`);
             } catch (lfsErr) {
                 console.error('[备份] Git LFS 安装失败:', lfsErr.message);
+                if (lfsErr.stderr) console.error('[备份] LFS stderr:', lfsErr.stderr);
                 throw new Error('Git LFS 未安装或配置失败');
             }
 
@@ -3417,27 +3487,34 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             const backupFileName = `backup-${userHandle}.zip`;
             const targetPath = path.join(tempGitDir, backupFileName);
             fs.copyFileSync(tempZipPath, targetPath);
+            console.log(`[备份] 备份文件已复制: ${backupFileName} (${fileSize} MB)`);
 
             // 添加到 Git LFS 跟踪
             sendProgress('正在配置 LFS 跟踪...', 65);
+            console.log('[备份] 配置 LFS 跟踪 *.zip 文件...');
             execSync(`git lfs track "*.zip"`, { cwd: tempGitDir, stdio: 'pipe' });
 
             // 提交并推送
             sendProgress('正在添加文件到 Git...', 70);
+            console.log('[备份] 添加文件到 Git...');
             execSync('git add .gitattributes', { cwd: tempGitDir, stdio: 'pipe' });
             execSync(`git add "${backupFileName}"`, { cwd: tempGitDir, stdio: 'pipe' });
+            console.log('[备份] 文件已添加到 Git');
 
             sendProgress('正在提交更改...', 75);
             const commitMessage = `Backup for ${userHandle} at ${new Date().toISOString()}`;
+            console.log(`[备份] 提交更改: ${commitMessage}`);
             try {
-                execSync(`git commit -m "${commitMessage}"`, { cwd: tempGitDir, stdio: 'pipe' });
+                const commitOutput = execSync(`git commit -m "${commitMessage}"`, { cwd: tempGitDir, stdio: 'pipe', encoding: 'utf8' });
+                console.log('[备份] 提交输出:', commitOutput);
             } catch (commitErr) {
                 // 检查是否没有变化需要提交
                 const statusOutput = execSync('git status --porcelain', { cwd: tempGitDir, encoding: 'utf8' });
                 if (!statusOutput.trim()) {
-                    // 没有变化需要提交，跳过
+                    console.log('[备份] 没有变化需要提交，跳过');
                 } else {
                     console.error('[备份] 提交失败:', commitErr.message);
+                    if (commitErr.stderr) console.error('[备份] 提交 stderr:', commitErr.stderr);
                     throw commitErr;
                 }
             }
@@ -3445,6 +3522,7 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             sendProgress(`正在推送 ${fileSize} MB 到远程仓库...（可能需要较长时间）`, 80);
 
             // 使用 spawn 来实时捕获 git push 输出，避免阻塞
+            console.log('[备份] 开始推送到远程仓库...');
             await new Promise((resolve, reject) => {
                 const gitPush = spawn('git', ['push', 'origin', 'master'], {
                     cwd: tempGitDir,
@@ -3452,10 +3530,21 @@ app.post('/api/backup', jsonParser, async (req, res) => {
                 });
 
                 let lastProgress = 80;
+                let stdoutData = '';
+                let stderrData = '';
+
+                // 捕获 stdout
+                gitPush.stdout.on('data', (data) => {
+                    const output = data.toString();
+                    stdoutData += output;
+                    console.log('[备份] git push stdout:', output.trim());
+                });
 
                 // Git LFS 的进度信息通常在 stderr
                 gitPush.stderr.on('data', (data) => {
                     const output = data.toString();
+                    stderrData += output;
+                    console.log('[备份] git push stderr:', output.trim());
 
                     // 解析 Git LFS 上传进度
                     // 格式类似: "Uploading LFS objects:  50% (1/2), 10 MB | 1.2 MB/s"
@@ -3472,10 +3561,15 @@ app.post('/api/backup', jsonParser, async (req, res) => {
                 });
 
                 gitPush.on('close', (code) => {
+                    console.log('[备份] git push 退出码:', code);
                     if (code === 0) {
+                        console.log('[备份] 推送成功');
                         resolve();
                     } else {
-                        reject(new Error(`git push 失败，退出码: ${code}`));
+                        console.error('[备份] git push 失败');
+                        console.error('[备份] stdout:', stdoutData);
+                        console.error('[备份] stderr:', stderrData);
+                        reject(new Error(`git push 失败，退出码: ${code}\nstderr: ${stderrData}`));
                     }
                 });
 
@@ -3655,43 +3749,57 @@ app.post('/api/restore', jsonParser, async (req, res) => {
             // 查找备份文件
             const backupFileName = `backup-${userHandle}.zip`;
             const backupFilePath = path.join(tempGitDir, backupFileName);
+            console.log(`[恢复] 查找备份文件: ${backupFileName}`);
 
             if (!fs.existsSync(backupFilePath)) {
+                console.error(`[恢复] 未找到备份文件: ${backupFilePath}`);
                 fs.rmSync(tempGitDir, { recursive: true, force: true });
                 return sendComplete(false, `未找到备份文件: ${backupFileName}`);
             }
 
             const fileSize = (fs.statSync(backupFilePath).size / 1024 / 1024).toFixed(2);
             sendProgress(`找到备份文件，大小：${fileSize} MB`, 65);
+            console.log(`[恢复] 找到备份文件: ${backupFileName} (${fileSize} MB)`);
 
             // 备份当前数据（以防恢复失败）
             sendProgress('正在备份当前数据...', 70);
             const backupDir = path.join(getTempDir(), `backup-before-restore-${userHandle}-${timestamp}`);
+            console.log(`[恢复] 备份当前数据到: ${backupDir}`);
             if (fs.existsSync(userDataDir)) {
                 fs.cpSync(userDataDir, backupDir, { recursive: true });
+                console.log('[恢复] 当前数据备份完成');
+            } else {
+                console.log('[恢复] 当前数据目录不存在，跳过备份');
             }
 
             try {
                 // 清空当前数据目录
                 sendProgress('正在清空当前数据...', 75);
+                console.log(`[恢复] 清空当前数据目录: ${userDataDir}`);
                 if (fs.existsSync(userDataDir)) {
                     fs.rmSync(userDataDir, { recursive: true, force: true });
                 }
                 fs.mkdirSync(userDataDir, { recursive: true });
+                console.log('[恢复] 数据目录已清空');
 
                 // 解压恢复数据
                 sendProgress('正在解压备份文件...', 80);
+                console.log(`[恢复] 解压备份文件到: ${userDataDir}`);
                 await extract(backupFilePath, { dir: userDataDir });
+                console.log('[恢复] 解压完成');
 
                 sendProgress('解压完成，正在清理临时文件...', 95);
 
                 // 清理临时文件
+                console.log('[恢复] 清理临时文件...');
                 fs.rmSync(tempGitDir, { recursive: true, force: true });
                 if (fs.existsSync(backupDir)) {
                     fs.rmSync(backupDir, { recursive: true, force: true });
                 }
+                console.log('[恢复] 临时文件清理完成');
 
                 clearTimeout(timeoutId);
+                console.log('[恢复] 恢复成功！');
                 sendComplete(true, '恢复成功！', {
                     filename: backupFileName,
                     size: fileSize + ' MB'

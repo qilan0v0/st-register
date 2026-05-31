@@ -105,6 +105,9 @@ backup:
   tempDir: "E:\\A\\ST2\\log"
   # 自动清理超过 N 小时的临时文件（0 = 不自动清理）
   autoCleanupHours: 24
+  # Git 提交用户信息（用于备份到 Git 仓库）
+  gitUserName: "ST-Register"
+  gitUserEmail: "noreply@st-register.local"
 
 # SillyTavern 连接设置（一般无需修改）
 sillyTavern:
