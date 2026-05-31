@@ -19,11 +19,18 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
 import express from 'express';
 import storage from 'node-persist';
 import yaml from 'yaml';
 import _ from 'lodash';
+import { ZipArchive } from 'archiver';
+import extract from 'extract-zip';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const FormData = require('form-data');
 
 import { mountAdmin } from './admin.js';
 
@@ -1379,8 +1386,8 @@ ${MODERN_OVERRIDES}
                     return;
                 }
 
-                // 登录成功，cookie 已设置，跳转到主界面。
-                window.location.href = '/';
+                // 登录成功，cookie 已设置，跳转到数据管理页面。
+                window.location.href = '/dashboard';
             } catch (err) {
                 showError('网络错误，请稍后重试。');
             } finally {
@@ -1661,7 +1668,7 @@ const AUTH_SCRIPT = `
         if (res.status===429 && !raw) raw='Too many attempts. Try again later or recover your password.';
         lShowErr(translateError(raw)); return;
       }
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     } catch(err){ lShowErr('网络错误，请稍后重试。'); }
     finally { btn.disabled = false; sp.style.display = 'none'; }
   });
@@ -1810,7 +1817,581 @@ function buildAuthPage(initialView) {
 </html>`;
 }
 
+// ─── Dashboard Page (数据管理中心) ──────────────────────────────────────────
+
+function buildDashboardPage() {
+    const brand = renderBrand();
+    const title = escapeHtml(SITE.title || 'SillyTavern');
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据管理 — ${title}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+        body {
+            font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #070a14;
+            background-image:
+                radial-gradient(at 18% 18%, rgba(124,58,237,0.28), transparent 42%),
+                radial-gradient(at 82% 6%, rgba(233,69,96,0.22), transparent 44%),
+                radial-gradient(at 50% 100%, rgba(14,165,233,0.20), transparent 48%);
+            color: #e8eaf2;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow: hidden;
+        }
+        body::before, body::after {
+            content: ''; position: fixed; border-radius: 50%;
+            filter: blur(90px); z-index: 0; opacity: 0.55; pointer-events: none;
+        }
+        body::before {
+            width: 420px; height: 420px; background: #7c3aed;
+            top: -140px; left: -120px; animation: floatA 16s ease-in-out infinite;
+        }
+        body::after {
+            width: 360px; height: 360px; background: #e94560;
+            bottom: -150px; right: -110px; animation: floatB 18s ease-in-out infinite;
+        }
+        @keyframes floatA { 0%,100% { transform: translate(0,0) } 50% { transform: translate(70px,46px) } }
+        @keyframes floatB { 0%,100% { transform: translate(0,0) } 50% { transform: translate(-56px,-44px) } }
+
+        .container {
+            position: relative; z-index: 1;
+            background: rgba(18, 22, 38, 0.72);
+            backdrop-filter: blur(22px) saturate(160%);
+            -webkit-backdrop-filter: blur(22px) saturate(160%);
+            border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 22px;
+            padding: 46px 42px;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 24px 70px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07);
+            animation: cardIn 0.65s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        @keyframes cardIn {
+            from { opacity: 0; transform: translateY(18px) scale(0.97); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .logo { text-align: center; margin-bottom: 8px; font-size: 14px; color: #8b93ad; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; }
+        .brand-logo { display: block; max-width: 180px; max-height: 72px; margin: 0 auto 6px; object-fit: contain; }
+
+        h1 {
+            text-align: center;
+            background: linear-gradient(135deg, #ffffff, #c3c9ff 55%, #ff7a92);
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 28px; letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+        .subtitle { text-align: center; color: #8b93ad; font-size: 14px; margin-bottom: 32px; }
+
+        .user-info {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 13px;
+            padding: 16px 20px;
+            margin-bottom: 28px;
+            font-size: 14px;
+        }
+        .user-info .label { color: #8b93ad; display: inline-block; width: 80px; }
+        .user-info .value { color: #b9a3ff; font-weight: 600; }
+
+        .section {
+            margin-bottom: 24px;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #aab0c6;
+            margin-bottom: 12px;
+            padding-left: 4px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 13px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform .15s ease, box-shadow .2s ease, filter .2s ease;
+            letter-spacing: 0.3px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            filter: brightness(1.08);
+        }
+        button:active { transform: translateY(0); }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #7c3aed, #e94560);
+            color: white;
+            box-shadow: 0 10px 26px rgba(124,58,237,0.38);
+        }
+        .btn-primary:hover {
+            box-shadow: 0 14px 32px rgba(124,58,237,0.48);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #14b8a6, #22c55e);
+            color: white;
+            box-shadow: 0 10px 26px rgba(20,184,166,0.38);
+        }
+        .btn-secondary:hover {
+            box-shadow: 0 14px 32px rgba(20,184,166,0.48);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+            box-shadow: 0 10px 26px rgba(239,68,68,0.38);
+        }
+
+        .btn-enter {
+            width: 100%;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            color: white;
+            box-shadow: 0 10px 26px rgba(59,130,246,0.38);
+            font-size: 16px;
+            padding: 16px;
+        }
+        .btn-enter:hover {
+            box-shadow: 0 14px 32px rgba(59,130,246,0.48);
+        }
+
+        .message {
+            padding: 12px 16px;
+            border-radius: 11px;
+            margin-bottom: 16px;
+            font-size: 14px;
+            display: none;
+        }
+        .message.show { display: block; }
+        .message.success {
+            background: rgba(34,197,94,0.12);
+            border: 1px solid #22c55e;
+            color: #86efac;
+        }
+        .message.error {
+            background: rgba(239,68,68,0.12);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+        }
+        .message.info {
+            background: rgba(59,130,246,0.12);
+            border: 1px solid #3b82f6;
+            color: #93c5fd;
+        }
+
+        .progress-container {
+            display: none;
+            margin-bottom: 16px;
+        }
+        .progress-container.show { display: block; }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #7c3aed, #e94560);
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        .progress-text {
+            font-size: 13px;
+            color: #8b93ad;
+            text-align: center;
+        }
+
+        .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .config-section {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 11px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .config-section label {
+            display: block;
+            font-size: 13px;
+            color: #8b93ad;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        .config-section input {
+            width: 100%;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 9px;
+            color: #e8eaf2;
+            font-size: 14px;
+            outline: none;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        .config-section input:focus {
+            border-color: #8a96ff;
+            box-shadow: 0 0 0 3px rgba(124,138,255,0.16);
+        }
+        .config-section .hint {
+            font-size: 12px;
+            color: #6b7290;
+            margin-top: 6px;
+        }
+
+        .logout-link {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 13px;
+        }
+        .logout-link a {
+            color: #b9a3ff;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .logout-link a:hover {
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        ${brand}
+        <h1>数据管理中心</h1>
+        <p class="subtitle">备份和恢复您的 SillyTavern 数据</p>
+
+        <div class="user-info" id="userInfo">
+            <div><span class="label">当前用户：</span><span class="value" id="userName">加载中...</span></div>
+            <div><span class="label">登录账号：</span><span class="value" id="userHandle">加载中...</span></div>
+        </div>
+
+        <div class="message" id="message"></div>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">准备中...</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">魔搭社区配置</div>
+            <div class="config-section">
+                <label for="modelScopeToken">ModelScope Access Token</label>
+                <input type="password" id="modelScopeToken" placeholder="输入您的魔搭社区 Access Token">
+                <div class="hint">在 <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" style="color:#b9a3ff;">魔搭社区</a> 获取 Token</div>
+            </div>
+            <div class="config-section">
+                <label for="datasetName">数据集名称</label>
+                <input type="text" id="datasetName" placeholder="例如：username/st-backup">
+                <div class="hint">格式：用户名/数据集名称</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">数据操作</div>
+            <div class="btn-group">
+                <button class="btn-secondary" id="backupBtn">
+                    <span class="spinner" id="backupSpinner"></span>
+                    备份数据
+                </button>
+                <button class="btn-primary" id="restoreBtn">
+                    <span class="spinner" id="restoreSpinner"></span>
+                    恢复数据
+                </button>
+            </div>
+        </div>
+
+        <div class="section">
+            <button class="btn-enter" id="enterBtn">
+                🏰 进入酒馆
+            </button>
+        </div>
+
+        <div class="logout-link">
+            <a id="logoutLink">退出登录</a>
+        </div>
+    </div>
+
+    <script>
+        const message = document.getElementById('message');
+        const backupBtn = document.getElementById('backupBtn');
+        const restoreBtn = document.getElementById('restoreBtn');
+        const backupSpinner = document.getElementById('backupSpinner');
+        const restoreSpinner = document.getElementById('restoreSpinner');
+        const tokenInput = document.getElementById('modelScopeToken');
+        const datasetInput = document.getElementById('datasetName');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+
+        function showMessage(text, type = 'info') {
+            message.textContent = text;
+            message.className = 'message show ' + type;
+            setTimeout(() => message.classList.remove('show'), 5000);
+        }
+
+        function showProgress(text, percent) {
+            progressContainer.classList.add('show');
+            progressFill.style.width = percent + '%';
+            progressText.textContent = text;
+        }
+
+        function hideProgress() {
+            progressContainer.classList.remove('show');
+            progressFill.style.width = '0%';
+        }
+
+        // 加载用户信息
+        fetch('/api/current-user')
+            .then(r => {
+                console.log('获取用户信息响应状态:', r.status);
+                if (!r.ok) {
+                    throw new Error('HTTP ' + r.status);
+                }
+                return r.json();
+            })
+            .then(data => {
+                console.log('用户信息数据:', data);
+                // SillyTavern 返回的数据可能是 {user: {...}} 或直接是用户对象
+                const user = data.user || data;
+                if (user && user.handle) {
+                    document.getElementById('userName').textContent = user.name || '未知';
+                    document.getElementById('userHandle').textContent = user.handle || '未知';
+                    // 保存到 localStorage 用于备份/恢复
+                    localStorage.setItem('currentUserHandle', user.handle);
+                    console.log('用户信息已加载:', user.handle);
+                } else {
+                    console.error('用户数据格式错误:', data);
+                    throw new Error('Invalid user data');
+                }
+            })
+            .catch(err => {
+                console.error('加载用户信息失败:', err);
+                document.getElementById('userName').textContent = '加载失败';
+                document.getElementById('userHandle').textContent = '加载失败';
+                showMessage('无法加载用户信息，备份和恢复功能将不可用。请确保 SillyTavern 正在运行。', 'error');
+                // 不要自动跳转，让用户可以看到错误信息
+            });
+
+        // 从 localStorage 加载配置
+        const savedToken = localStorage.getItem('modelScopeToken');
+        const savedDataset = localStorage.getItem('datasetName');
+        if (savedToken) tokenInput.value = savedToken;
+        if (savedDataset) datasetInput.value = savedDataset;
+
+        // 保存配置到 localStorage（使用 input 事件实时保存）
+        tokenInput.addEventListener('input', () => {
+            localStorage.setItem('modelScopeToken', tokenInput.value.trim());
+        });
+        tokenInput.addEventListener('blur', () => {
+            localStorage.setItem('modelScopeToken', tokenInput.value.trim());
+        });
+        datasetInput.addEventListener('input', () => {
+            localStorage.setItem('datasetName', datasetInput.value.trim());
+        });
+        datasetInput.addEventListener('blur', () => {
+            localStorage.setItem('datasetName', datasetInput.value.trim());
+        });
+
+        // 备份数据
+        backupBtn.addEventListener('click', async () => {
+            const token = tokenInput.value.trim();
+            const dataset = datasetInput.value.trim();
+            const userHandle = localStorage.getItem('currentUserHandle');
+
+            if (!token || !dataset) {
+                showMessage('请先配置 Token 和数据集名称', 'error');
+                return;
+            }
+
+            if (!userHandle) {
+                showMessage('无法获取用户信息，请刷新页面', 'error');
+                return;
+            }
+
+            backupBtn.disabled = true;
+            restoreBtn.disabled = true;
+            backupSpinner.style.display = 'inline-block';
+            hideProgress();
+            showMessage('正在备份数据，请稍候...', 'info');
+
+            try {
+                const response = await fetch('/api/backup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, dataset, userHandle })
+                });
+
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status);
+                }
+
+                // 使用 EventSource 接收进度
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                console.log('开始接收 SSE 数据');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        console.log('SSE 流结束');
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+                    console.log('收到数据块，当前缓冲区:', buffer.substring(0, 100));
+
+                    const lines = buffer.split('\\n');
+                    buffer = lines.pop() || ''; // 保留最后一个不完整的行
+
+                    for (const line of lines) {
+                        console.log('处理行:', line.substring(0, 50));
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                console.log('解析成功:', data);
+
+                                if (data.success !== undefined) {
+                                    hideProgress();
+                                    if (data.success) {
+                                        var msg = '备份成功！文件：' + data.filename + '，大小：' + data.size;
+                                        showMessage(msg, 'success');
+                                    } else {
+                                        showMessage(data.message || '备份失败', 'error');
+                                    }
+                                } else if (data.progress !== null) {
+                                    // 进度更新
+                                    showProgress(data.message, data.progress);
+                                } else {
+                                    // 普通消息
+                                    showMessage(data.message, 'info');
+                                }
+                            } catch (e) {
+                                console.error('解析 SSE 数据失败:', e, line);
+                            }
+                        }
+                    }
+                }
+
+            } catch (err) {
+                hideProgress();
+                showMessage('备份失败：' + err.message, 'error');
+            } finally {
+                backupBtn.disabled = false;
+                restoreBtn.disabled = false;
+                backupSpinner.style.display = 'none';
+            }
+        });
+
+        // 恢复数据
+        restoreBtn.addEventListener('click', async () => {
+            const token = tokenInput.value.trim();
+            const dataset = datasetInput.value.trim();
+            const userHandle = localStorage.getItem('currentUserHandle');
+
+            if (!token || !dataset) {
+                showMessage('请先配置 Token 和数据集名称', 'error');
+                return;
+            }
+
+            if (!userHandle) {
+                showMessage('无法获取用户信息，请刷新页面', 'error');
+                return;
+            }
+
+            if (!confirm('恢复数据将覆盖当前所有数据，确定要继续吗？')) {
+                return;
+            }
+
+            restoreBtn.disabled = true;
+            restoreSpinner.style.display = 'inline-block';
+            showMessage('正在恢复数据，请稍候...', 'info');
+
+            try {
+                const response = await fetch('/api/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, dataset, userHandle })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showMessage('恢复成功！', 'success');
+                } else {
+                    showMessage(result.error || '恢复失败', 'error');
+                }
+            } catch (err) {
+                showMessage('恢复失败：' + err.message, 'error');
+            } finally {
+                restoreBtn.disabled = false;
+                restoreSpinner.style.display = 'none';
+            }
+        });
+
+        // 进入酒馆
+        document.getElementById('enterBtn').addEventListener('click', () => {
+            window.location.href = '/st';
+        });
+
+        // 退出登录
+        document.getElementById('logoutLink').addEventListener('click', async () => {
+            if (confirm('确定要退出登录吗？')) {
+                try {
+                    await fetch('/api/users/logout', { method: 'POST' });
+                } catch (e) {}
+                window.location.href = '/login';
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
+
+// Dashboard 页面（登录后的数据管理中心）
+app.get('/dashboard', (_req, res) => {
+    res.type('html').send(buildDashboardPage());
+});
 
 // 公开统计（登录/注册页用来显示「当前人数 / 上限」）。
 // 用户数缓存 5 秒，避免高并发下频繁扫描存储。
@@ -2003,6 +2584,351 @@ app.post('/register', jsonParser, formParser, rateLimiter, async (req, res) => {
     }
 });
 
+// ─── Backup & Restore API ────────────────────────────────────────────────────
+
+// 备份当前用户数据到魔搭社区（使用 Git LFS）
+app.post('/api/backup', jsonParser, async (req, res) => {
+    console.log('[备份] 收到备份请求');
+    console.log('[备份] 请求体:', req.body);
+
+    // 设置 SSE 响应头，用于实时推送进度
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    function sendProgress(message, progress = null) {
+        const data = { message, progress };
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+        console.log(`[备份进度] ${message}${progress !== null ? ` (${progress}%)` : ''}`);
+    }
+
+    function sendComplete(success, message, data = {}) {
+        const result = { success, message, ...data };
+        res.write(`data: ${JSON.stringify(result)}\n\n`);
+        res.end();
+    }
+
+    try {
+        const { token, dataset, userHandle } = req.body;
+
+        if (!token || !dataset || !userHandle) {
+            console.log('[备份] 缺少必要参数', { token: !!token, dataset: !!dataset, userHandle: !!userHandle });
+            return sendComplete(false, '缺少必要参数');
+        }
+
+        console.log(`[备份] 数据集: ${dataset}`);
+        console.log(`[备份] 用户: ${userHandle}`);
+
+        const userDataDir = path.join(DATA_ROOT, userHandle);
+        if (!fs.existsSync(userDataDir)) {
+            console.log(`[备份] 用户数据目录不存在: ${userDataDir}`);
+            return sendComplete(false, '用户数据目录不存在');
+        }
+
+        console.log(`[备份] 用户数据目录: ${userDataDir}`);
+
+        // 创建临时 zip 文件
+        sendProgress('正在扫描数据文件...', 5);
+        const timestamp = Date.now();
+        const tempZipPath = path.join(__dirname, `backup-${userHandle}-${timestamp}.zip`);
+        console.log(`[备份] 创建临时文件: ${tempZipPath}`);
+
+        sendProgress('正在压缩数据...', 10);
+        const output = fs.createWriteStream(tempZipPath);
+        const archive = new ZipArchive({ zlib: { level: 9 } });
+
+        archive.on('error', (err) => {
+            console.error('[备份] Archive 错误:', err);
+            throw err;
+        });
+
+        // 监听压缩进度
+        let totalBytes = 0;
+        let processedBytes = 0;
+
+        archive.on('progress', (progress) => {
+            if (progress.fs && progress.fs.totalBytes > 0) {
+                totalBytes = progress.fs.totalBytes;
+                processedBytes = progress.fs.processedBytes;
+                const percent = Math.floor((processedBytes / totalBytes) * 100);
+                const progressPercent = 10 + Math.floor(percent * 0.15); // 10% - 25%
+                sendProgress(`正在压缩数据... ${(processedBytes / 1024 / 1024).toFixed(1)} MB / ${(totalBytes / 1024 / 1024).toFixed(1)} MB`, progressPercent);
+            }
+        });
+
+        archive.pipe(output);
+        archive.directory(userDataDir, false);
+        await archive.finalize();
+
+        await new Promise((resolve, reject) => {
+            output.on('close', resolve);
+            output.on('error', reject);
+        });
+
+        const fileSize = (fs.statSync(tempZipPath).size / 1024 / 1024).toFixed(2);
+        console.log(`[备份] 已创建备份文件: ${tempZipPath} (${fileSize} MB)`);
+        sendProgress(`压缩完成，文件大小：${fileSize} MB`, 25);
+
+        // 解析数据集名称
+        const [namespace, datasetName] = dataset.split('/');
+        if (!namespace || !datasetName) {
+            fs.unlinkSync(tempZipPath);
+            console.log('[备份] 数据集名称格式错误');
+            return sendComplete(false, '数据集名称格式错误，应为：用户名/数据集名称');
+        }
+
+        // 创建临时目录用于 Git 操作
+        sendProgress('正在连接魔搭社区...', 30);
+        const tempGitDir = path.join(__dirname, `git-temp-${userHandle}-${timestamp}`);
+        fs.mkdirSync(tempGitDir, { recursive: true });
+        console.log(`[备份] 创建临时 Git 目录: ${tempGitDir}`);
+
+        try {
+            // 克隆数据集仓库
+            const repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+            console.log(`[备份] 正在克隆数据集: ${namespace}/${datasetName}`);
+            sendProgress('正在克隆数据集仓库...（可能需要几秒）', 35);
+
+            try {
+                execSync(`git clone --depth 1 "${repoUrl}" "${tempGitDir}"`, {
+                    stdio: 'pipe',
+                    encoding: 'utf8'
+                });
+                console.log('[备份] 克隆成功');
+                sendProgress('克隆完成', 50);
+            } catch (cloneErr) {
+                console.error('[备份] 克隆失败:', cloneErr.message);
+                throw new Error('克隆仓库失败：' + cloneErr.message);
+            }
+
+            // 配置 Git LFS
+            sendProgress('正在配置 Git LFS...', 55);
+            console.log('[备份] 配置 Git LFS');
+            try {
+                execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
+
+                // 配置 Git 用户信息（提交需要）
+                execSync('git config user.name "ST-Register"', { cwd: tempGitDir, stdio: 'pipe' });
+                execSync('git config user.email "backup@st-register.local"', { cwd: tempGitDir, stdio: 'pipe' });
+            } catch (lfsErr) {
+                console.error('[备份] Git LFS 安装失败:', lfsErr.message);
+                throw new Error('Git LFS 未安装或配置失败');
+            }
+
+            // 复制备份文件到仓库
+            sendProgress(`正在准备上传 ${fileSize} MB 文件...`, 60);
+            const backupFileName = `backup-${userHandle}.zip`;
+            const targetPath = path.join(tempGitDir, backupFileName);
+            console.log(`[备份] 复制备份文件到: ${targetPath}`);
+            fs.copyFileSync(tempZipPath, targetPath);
+
+            // 添加到 Git LFS 跟踪
+            sendProgress('正在配置 LFS 跟踪...', 65);
+            console.log('[备份] 配置 Git LFS 跟踪');
+            execSync(`git lfs track "*.zip"`, { cwd: tempGitDir, stdio: 'pipe' });
+
+            // 提交并推送
+            sendProgress('正在添加文件到 Git...', 70);
+            console.log('[备份] 添加文件到 Git');
+            execSync('git add .gitattributes', { cwd: tempGitDir, stdio: 'pipe' });
+            execSync(`git add "${backupFileName}"`, { cwd: tempGitDir, stdio: 'pipe' });
+
+            sendProgress('正在提交更改...', 75);
+            const commitMessage = `Backup for ${userHandle} at ${new Date().toISOString()}`;
+            console.log('[备份] 提交更改');
+            try {
+                execSync(`git commit -m "${commitMessage}"`, { cwd: tempGitDir, stdio: 'pipe' });
+            } catch (commitErr) {
+                console.error('[备份] 提交失败:', commitErr.message);
+                console.error('[备份] 提交错误详情:', commitErr.stderr ? commitErr.stderr.toString() : '无');
+                // 检查是否没有变化需要提交
+                const statusOutput = execSync('git status --porcelain', { cwd: tempGitDir, encoding: 'utf8' });
+                if (!statusOutput.trim()) {
+                    console.log('[备份] 没有变化需要提交，跳过');
+                } else {
+                    throw commitErr;
+                }
+            }
+
+            sendProgress(`正在推送 ${fileSize} MB 到远程仓库...（可能需要较长时间）`, 80);
+            console.log('[备份] 正在推送到远程仓库...');
+            execSync('git push origin master', { cwd: tempGitDir, stdio: 'pipe' });
+
+            sendProgress('推送完成，正在清理临时文件...', 95);
+
+            console.log(`[备份] 用户 ${userHandle} 备份成功`);
+
+            // 清理临时文件
+            fs.unlinkSync(tempZipPath);
+            fs.rmSync(tempGitDir, { recursive: true, force: true });
+
+            sendComplete(true, '备份成功！', {
+                filename: backupFileName,
+                size: fileSize + ' MB'
+            });
+
+        } catch (gitErr) {
+            console.error('[备份] Git 操作失败:', gitErr.message);
+
+            // 清理临时文件
+            if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);
+            if (fs.existsSync(tempGitDir)) fs.rmSync(tempGitDir, { recursive: true, force: true });
+
+            sendComplete(false, 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有写入权限。');
+        }
+
+    } catch (err) {
+        console.error('[备份] 错误:', err);
+        sendComplete(false, '备份失败：' + err.message);
+    }
+});
+
+// 从魔搭社区恢复数据（使用 Git LFS）
+app.post('/api/restore', jsonParser, async (req, res) => {
+    console.log('[恢复] 收到恢复请求');
+
+    try {
+        const { token, dataset, userHandle } = req.body;
+
+        if (!token || !dataset || !userHandle) {
+            console.log('[恢复] 缺少必要参数');
+            return res.status(400).json({ error: '缺少必要参数' });
+        }
+
+        console.log(`[恢复] 数据集: ${dataset}`);
+        console.log(`[恢复] 用户: ${userHandle}`);
+
+        const userDataDir = path.join(DATA_ROOT, userHandle);
+
+        // 解析数据集名称
+        const [namespace, datasetName] = dataset.split('/');
+        if (!namespace || !datasetName) {
+            return res.status(400).json({ error: '数据集名称格式错误，应为：用户名/数据集名称' });
+        }
+
+        // 创建临时目录用于 Git 操作
+        const timestamp = Date.now();
+        const tempGitDir = path.join(__dirname, `git-restore-${userHandle}-${timestamp}`);
+        fs.mkdirSync(tempGitDir, { recursive: true });
+
+        try {
+            // 克隆数据集仓库
+            const repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+            console.log(`[恢复] 正在克隆数据集: ${namespace}/${datasetName}`);
+
+            const { execSync } = require('child_process');
+
+            // 克隆仓库
+            execSync(`git clone "${repoUrl}" "${tempGitDir}"`, {
+                stdio: 'pipe',
+                encoding: 'utf8'
+            });
+
+            // 配置 Git LFS 并拉取大文件
+            execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
+            execSync('git lfs pull', { cwd: tempGitDir, stdio: 'pipe' });
+
+            // 查找备份文件
+            const backupFileName = `backup-${userHandle}.zip`;
+            const backupFilePath = path.join(tempGitDir, backupFileName);
+
+            if (!fs.existsSync(backupFilePath)) {
+                fs.rmSync(tempGitDir, { recursive: true, force: true });
+                return res.status(404).json({ error: `未找到备份文件: ${backupFileName}` });
+            }
+
+            console.log(`[恢复] 找到备份文件: ${backupFileName}`);
+
+            // 备份当前数据（以防恢复失败）
+            const backupDir = path.join(__dirname, `backup-before-restore-${userHandle}-${timestamp}`);
+            if (fs.existsSync(userDataDir)) {
+                console.log(`[恢复] 备份当前数据到: ${backupDir}`);
+                fs.cpSync(userDataDir, backupDir, { recursive: true });
+            }
+
+            try {
+                // 清空当前数据目录
+                if (fs.existsSync(userDataDir)) {
+                    fs.rmSync(userDataDir, { recursive: true, force: true });
+                }
+                fs.mkdirSync(userDataDir, { recursive: true });
+
+                // 解压恢复数据
+                console.log(`[恢复] 正在解压备份文件...`);
+                await extract(backupFilePath, { dir: userDataDir });
+
+                // 清理临时文件
+                fs.rmSync(tempGitDir, { recursive: true, force: true });
+                if (fs.existsSync(backupDir)) {
+                    fs.rmSync(backupDir, { recursive: true, force: true });
+                }
+
+                console.log(`[恢复] 用户 ${userHandle} 恢复成功`);
+                return res.json({ success: true, message: '恢复成功' });
+
+            } catch (extractErr) {
+                // 恢复失败，回滚到备份
+                console.error('[恢复] 解压失败，正在回滚:', extractErr);
+                if (fs.existsSync(userDataDir)) {
+                    fs.rmSync(userDataDir, { recursive: true, force: true });
+                }
+                if (fs.existsSync(backupDir)) {
+                    fs.cpSync(backupDir, userDataDir, { recursive: true });
+                    fs.rmSync(backupDir, { recursive: true, force: true });
+                }
+                if (fs.existsSync(tempGitDir)) {
+                    fs.rmSync(tempGitDir, { recursive: true, force: true });
+                }
+                throw extractErr;
+            }
+
+        } catch (gitErr) {
+            console.error('[恢复] Git 操作失败:', gitErr.message);
+
+            // 清理临时文件
+            if (fs.existsSync(tempGitDir)) fs.rmSync(tempGitDir, { recursive: true, force: true });
+
+            return res.status(500).json({
+                error: 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有读取权限。'
+            });
+        }
+
+    } catch (err) {
+        console.error('[恢复] 错误:', err);
+        return res.status(500).json({ error: '恢复失败：' + err.message });
+    }
+});
+
+// 获取当前登录用户的 handle（从 cookie 中解析）
+async function getCurrentUserHandle(req) {
+    try {
+        // 从 cookie 中获取 session
+        const cookies = req.headers.cookie;
+        if (!cookies) {
+            console.log('[getCurrentUserHandle] 没有 cookie');
+            return null;
+        }
+
+        // 解析 connect.sid cookie
+        const sidMatch = cookies.match(/connect\.sid=([^;]+)/);
+        if (!sidMatch) {
+            console.log('[getCurrentUserHandle] 没有找到 session cookie');
+            return null;
+        }
+
+        // 从 node-persist 存储中查找所有用户，检查哪个用户当前登录
+        // 这是一个简化的方法，实际上 SillyTavern 的 session 存储在内存中
+        // 我们需要另一种方法
+
+        // 更简单的方法：让前端传递用户名
+        console.log('[getCurrentUserHandle] 无法从 cookie 解析用户，需要前端传递');
+        return null;
+    } catch (err) {
+        console.error('[getCurrentUserHandle] 异常:', err.message);
+        return null;
+    }
+}
+
 // ─── Admin backend ────────────────────────────────────────────────────────────
 
 // 挂载后台管理（/admin 与 /admin/api/*）。必须在反向代理兜底之前，
@@ -2024,7 +2950,7 @@ mountAdmin(app, {
 
 // ─── Reverse proxy to SillyTavern ─────────────────────────────────────────────
 
-// 除 /register 外的所有请求都原样转发给本机的 SillyTavern。
+// /st 及其子路径代理到 SillyTavern，其他路径按需处理。
 // 使用 Node 内置 http 模块，零额外依赖，逐字节透传（支持 SSE 流式响应）。
 // 对 SillyTavern 返回的 HTML 文档，会把标题/品牌名替换为站点标题（不改 ST 文件）。
 
@@ -2036,7 +2962,13 @@ const proxyAgent = new http.Agent({
     maxFreeSockets: 64,
 });
 
-app.use((req, res) => {
+// 根路径重定向到 dashboard
+app.get('/', (req, res) => {
+    res.redirect('/dashboard');
+});
+
+// 代理函数：转发请求到 SillyTavern
+function proxyToST(req, res, targetPath) {
     // 是否需要改写响应（替换标题 / 注入公告）。仅在确有需要时才关压缩 + 缓冲，
     // 否则完全透传（保留 SillyTavern 的 gzip，前端 bundle 不被放大）。
     const mayRewrite = (SITE.title && SITE.title !== 'SillyTavern')
@@ -2052,19 +2984,25 @@ app.use((req, res) => {
         host: ST_HOST,
         port: ST_PORT,
         method: req.method,
-        path: req.originalUrl,
+        path: targetPath,
         headers: reqHeaders,
         agent: proxyAgent,
     };
 
     const proxyReq = http.request(options, (proxyRes) => {
-        // 修正可能指向内部地址的重定向，改为同源相对路径，
-        // 这样 SillyTavern 的 / → /login 重定向能正确落到本代理的 /login。
+        // 修正可能指向内部地址的重定向，改为同源相对路径。
+        // SillyTavern 的重定向需要加上 /st 前缀
         const location = proxyRes.headers['location'];
         if (location) {
-            proxyRes.headers['location'] = location
+            let newLocation = location
                 .replace(`http://${ST_HOST}:${ST_PORT}`, '')
                 .replace(`http://localhost:${ST_PORT}`, '');
+
+            // 如果是相对路径且不是以 /st 开头，添加 /st 前缀
+            if (newLocation && newLocation.startsWith('/') && !newLocation.startsWith('/st')) {
+                newLocation = '/st' + newLocation;
+            }
+            proxyRes.headers['location'] = newLocation;
         }
 
         const contentType = String(proxyRes.headers['content-type'] || '');
@@ -2107,6 +3045,71 @@ app.use((req, res) => {
 
     // 透传请求体（注意：/register 不会走到这里，所以请求体未被消费）。
     req.pipe(proxyReq);
+}
+
+// 获取当前用户信息（必须在通用 /api 代理之前）
+app.get('/api/current-user', (req, res) => {
+    console.log('[/api/current-user] 收到请求');
+    console.log('[/api/current-user] Cookie:', req.headers.cookie);
+
+    // 直接代理到 SillyTavern 的 /api/users/me
+    proxyToST(req, res, '/api/users/me');
+});
+
+// /api/* 路径代理到 SillyTavern（用于登录、用户信息等 API）
+app.use('/api', (req, res) => {
+    console.log('[/api 通用代理] 拦截到请求:', req.method, req.originalUrl);
+    proxyToST(req, res, req.originalUrl);
+});
+
+// /csrf-token 代理到 SillyTavern
+app.use('/csrf-token', (req, res) => {
+    proxyToST(req, res, req.originalUrl);
+});
+
+// /st 及其子路径代理到 SillyTavern
+app.use('/st', (req, res) => {
+    // 去掉 /st 前缀，转发到 SillyTavern 的根路径
+    const targetPath = req.originalUrl.replace(/^\/st/, '') || '/';
+    proxyToST(req, res, targetPath);
+});
+
+// SillyTavern 的静态资源路径（从 /st 页面加载的资源）
+const stStaticPaths = ['/lib/', '/scripts/', '/css/', '/assets/', '/characters/', '/backgrounds/', '/user/', '/thumbnails/', '/worlds/', '/groups/', '/chats/', '/themes/', '/extensions/', '/instruct/', '/context/', '/QuickReplies/', '/vectors/', '/backups/', '/sysprompt/', '/reasoning/', '/User Avatars/', '/NovelAI Settings/', '/KoboldAI Settings/', '/OpenAI Settings/', '/TextGen Settings/', '/movingUI/', '/default-content/', '/img/', '/sound/', '/fonts/'];
+
+app.use((req, res, next) => {
+    const path = req.path;
+
+    // 检查是否是 SillyTavern 的静态资源路径
+    const isSTStatic = stStaticPaths.some(prefix => path.startsWith(prefix));
+
+    if (isSTStatic) {
+        // 代理到 SillyTavern
+        proxyToST(req, res, req.originalUrl);
+    } else {
+        next();
+    }
+});
+
+// 兜底：其他所有未匹配的路径也代理到 SillyTavern（用于静态资源）
+// 这样 /lib/*, /scripts/*, /css/* 等资源都能正确加载
+app.use((req, res) => {
+    // 排除已经处理过的路径
+    const path = req.path;
+    if (path.startsWith('/register') ||
+        path.startsWith('/login') ||
+        path.startsWith('/dashboard') ||
+        path.startsWith('/admin') ||
+        path === '/stats' ||
+        path === '/server-info' ||
+        path === '/bg-info' ||
+        path === '/friend-links' ||
+        path === '/bg') {
+        return res.status(404).send('Not Found');
+    }
+
+    // 其他路径代理到 SillyTavern
+    proxyToST(req, res, req.originalUrl);
 });
 
 // 判断请求是否在请求一个 HTML 文档（用于决定是否需要关压缩做改写）。

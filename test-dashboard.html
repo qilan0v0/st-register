@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>测试 Dashboard</title>
+</head>
+<body>
+    <h1>测试页面</h1>
+    <div id="userName">加载中...</div>
+    <div id="userHandle">加载中...</div>
+    <div id="message"></div>
+
+    <script>
+        console.log('脚本开始执行');
+
+        function showMessage(text, type) {
+            console.log('showMessage:', text, type);
+            document.getElementById('message').textContent = text;
+        }
+
+        // 测试加载用户信息
+        console.log('准备获取用户信息');
+        fetch('/api/current-user')
+            .then(r => {
+                console.log('获取用户信息响应状态:', r.status);
+                if (!r.ok) {
+                    throw new Error('HTTP ' + r.status);
+                }
+                return r.json();
+            })
+            .then(data => {
+                console.log('用户信息数据:', data);
+                const user = data.user || data;
+                if (user && user.handle) {
+                    document.getElementById('userName').textContent = user.name || '未知';
+                    document.getElementById('userHandle').textContent = user.handle || '未知';
+                    localStorage.setItem('currentUserHandle', user.handle);
+                    console.log('用户信息已加载:', user.handle);
+                } else {
+                    console.error('用户数据格式错误:', data);
+                    throw new Error('Invalid user data');
+                }
+            })
+            .catch(err => {
+                console.error('加载用户信息失败:', err);
+                document.getElementById('userName').textContent = '加载失败';
+                document.getElementById('userHandle').textContent = '加载失败';
+                showMessage('无法加载用户信息', 'error');
+            });
+
+        console.log('脚本执行完毕');
+    </script>
+</body>
+</html>
