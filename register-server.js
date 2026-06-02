@@ -3080,23 +3080,24 @@ function buildDashboardPage() {
 
 // ─── Authentication Middleware ───────────────────────────────────────────────
 
-// 说明：登录态判断统一用 hasSessionCookie()（定义在反向代理区，函数声明已提升），
-// 只检查浏览器是否带 SillyTavern 的 session cookie，绝不向 SillyTavern 发额外请求 ——
-// SillyTavern 用 cookie-session，CSRF token 存在 session cookie 里，任何额外的代理请求
-// 都可能触发它返回新的 Set-Cookie，若处理不当就会让浏览器的 CSRF token 与服务端失配，
-// 导致聊天 / 切换角色 / QR 等所有 POST 请求 CSRF 校验失败。
+// 说明：登录态判断统一用 isLoggedIn()（定义在反向代理区，函数声明已提升）。
+// 它本地解码 SillyTavern 的 session cookie（base64(JSON)），只有当里面带有非空的用户
+// handle 时才算「已登录」—— 仅有匿名会话（只含 csrfToken）不算。绝不向 SillyTavern 发
+// 额外请求：SillyTavern 用 cookie-session，CSRF token 存在 session cookie 里，任何额外的
+// 代理请求都可能触发它返回新的 Set-Cookie，处理不当就会让浏览器 CSRF token 与服务端失配，
+// 导致聊天 / 切换角色 / QR 等 POST 请求校验失败。
 
-// 需要登录的中间件（轻量：只看 session cookie 是否存在，不发请求污染 session）
+// 需要登录的中间件（轻量：本地解码 session cookie 判断是否真正登录，不发请求污染 session）
 function requireAuth(req, res, next) {
-    if (!hasSessionCookie(req)) {
+    if (!isLoggedIn(req)) {
         return res.redirect('/login');
     }
     next();
 }
 
-// 已登录则重定向到 dashboard（轻量：只看 session cookie 是否存在）
+// 已登录则重定向到 dashboard（轻量：本地解码 session cookie，仅真正登录才跳转）
 function redirectIfAuth(req, res, next) {
-    if (hasSessionCookie(req)) {
+    if (isLoggedIn(req)) {
         return res.redirect('/dashboard');
     }
     next();
@@ -4128,7 +4129,7 @@ const proxyAgent = new http.Agent({
 
 // 根路径：未登录跳登录页，已登录直接代理到 SillyTavern 根路径
 app.get('/', (req, res) => {
-    if (!hasSessionCookie(req)) return res.redirect('/login');
+    if (!isLoggedIn(req)) return res.redirect('/login');
     proxyToST(req, res, '/');
 });
 
@@ -4231,6 +4232,34 @@ app.use('/csrf-token', (req, res) => {
 function hasSessionCookie(req) {
     const cookies = req.headers.cookie || '';
     return /(?:^|;\s*)session-[a-f0-9]{8}=/.test(cookies);
+}
+
+// 解码 SillyTavern 的 cookie-session（cookie 名 session-xxxxxxxx，值为 base64(JSON)）。
+// 纯本地解析，不向 SillyTavern 发任何请求，不会污染 session / CSRF token。
+// 注意：这里不校验签名（.sig），仅用于「是否已登录」的页面跳转判断；真正的鉴权
+// 由 SillyTavern 自己在各 API 上完成，伪造 cookie 无法通过 SillyTavern 的校验。
+function getSTSession(req) {
+    const cookies = req.headers.cookie || '';
+    // 匹配主 session cookie 的值；.sig 那个的名字后面不是「=」，不会被匹配到。
+    const m = cookies.match(/(?:^|;\s*)session-[a-f0-9]{8}=([^;]+)/);
+    if (!m) return null;
+    let val = m[1];
+    try { val = decodeURIComponent(val); } catch { /* 非编码值，原样使用 */ }
+    try {
+        const json = Buffer.from(val, 'base64').toString('utf8');
+        const obj = JSON.parse(json);
+        return (obj && typeof obj === 'object') ? obj : null;
+    } catch {
+        return null;
+    }
+}
+
+// 是否「真正登录」：session 里带有非空的用户 handle（SillyTavern 登录后才会写入）。
+// 仅有匿名会话（只含 csrfToken、没有 handle）不算登录 —— 修复「打开登录页就被当成
+// 已登录而跳转 /dashboard，结果加载不出用户信息」的问题。
+function isLoggedIn(req) {
+    const sess = getSTSession(req);
+    return !!(sess && typeof sess.handle === 'string' && sess.handle.length > 0);
 }
 
 // SillyTavern 的静态资源路径（从根路径页面加载的资源）
