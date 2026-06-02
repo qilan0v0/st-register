@@ -2836,7 +2836,7 @@ function buildDashboardPage() {
 
         // 进入酒馆
         document.getElementById('enterBtn').addEventListener('click', () => {
-            window.location.href = '/st';
+            window.location.href = '/';
         });
 
         // 本地备份上传
@@ -2976,58 +2976,23 @@ function buildDashboardPage() {
 
 // ─── Authentication Middleware ───────────────────────────────────────────────
 
-// 检查用户是否已登录（通过代理到 SillyTavern 的 /api/users/me）
-async function checkAuth(req) {
-    return new Promise((resolve) => {
-        const options = {
-            host: ST_HOST,
-            port: ST_PORT,
-            method: 'GET',
-            path: '/api/users/me',
-            headers: {
-                'Cookie': req.headers.cookie || '',
-            },
-        };
+// 说明：登录态判断统一用 hasSessionCookie()（定义在反向代理区，函数声明已提升），
+// 只检查浏览器是否带 SillyTavern 的 session cookie，绝不向 SillyTavern 发额外请求 ——
+// SillyTavern 用 cookie-session，CSRF token 存在 session cookie 里，任何额外的代理请求
+// 都可能触发它返回新的 Set-Cookie，若处理不当就会让浏览器的 CSRF token 与服务端失配，
+// 导致聊天 / 切换角色 / QR 等所有 POST 请求 CSRF 校验失败。
 
-        const proxyReq = http.request(options, (proxyRes) => {
-            let data = '';
-            proxyRes.on('data', chunk => data += chunk);
-            proxyRes.on('end', () => {
-                if (proxyRes.statusCode === 200) {
-                    try {
-                        const user = JSON.parse(data);
-                        resolve({ authenticated: true, user });
-                    } catch {
-                        resolve({ authenticated: false });
-                    }
-                } else {
-                    resolve({ authenticated: false });
-                }
-            });
-        });
-
-        proxyReq.on('error', () => {
-            resolve({ authenticated: false });
-        });
-
-        proxyReq.end();
-    });
-}
-
-// 需要登录的中间件
-async function requireAuth(req, res, next) {
-    const auth = await checkAuth(req);
-    if (!auth.authenticated) {
+// 需要登录的中间件（轻量：只看 session cookie 是否存在，不发请求污染 session）
+function requireAuth(req, res, next) {
+    if (!hasSessionCookie(req)) {
         return res.redirect('/login');
     }
-    req.user = auth.user;
     next();
 }
 
-// 已登录则重定向到 dashboard
-async function redirectIfAuth(req, res, next) {
-    const auth = await checkAuth(req);
-    if (auth.authenticated) {
+// 已登录则重定向到 dashboard（轻量：只看 session cookie 是否存在）
+function redirectIfAuth(req, res, next) {
+    if (hasSessionCookie(req)) {
         return res.redirect('/dashboard');
     }
     next();
@@ -4044,7 +4009,7 @@ mountAdmin(app, {
 
 // ─── Reverse proxy to SillyTavern ─────────────────────────────────────────────
 
-// /st 及其子路径代理到 SillyTavern，其他路径按需处理。
+// SillyTavern 占据根路径 / 及所有未被自有页面占用的路径，由根路由+兜底代理转发。
 // 使用 Node 内置 http 模块，零额外依赖，逐字节透传（支持 SSE 流式响应）。
 // 对 SillyTavern 返回的 HTML 文档，会把标题/品牌名替换为站点标题（不改 ST 文件）。
 
@@ -4056,21 +4021,24 @@ const proxyAgent = new http.Agent({
     maxFreeSockets: 64,
 });
 
-// 根路径重定向到 dashboard
-app.get('/', requireAuth, (req, res) => {
-    res.redirect('/dashboard');
+// 根路径：未登录跳登录页，已登录直接代理到 SillyTavern 根路径
+app.get('/', (req, res) => {
+    if (!hasSessionCookie(req)) return res.redirect('/login');
+    proxyToST(req, res, '/');
 });
 
 // 代理函数：转发请求到 SillyTavern
 function proxyToST(req, res, targetPath) {
     // 是否需要改写响应（替换标题 / 注入公告）。仅在确有需要时才关压缩 + 缓冲，
     // 否则完全透传（保留 SillyTavern 的 gzip，前端 bundle 不被放大）。
-    const mayRewrite = (SITE.title && SITE.title !== 'SillyTavern')
+    // 关键：只对「顶层页面导航」做改写，绝不碰 fetch 加载的 HTML 模板片段。
+    const wantRewrite = (SITE.title && SITE.title !== 'SillyTavern')
         || (ANNOUNCE.enabled && ANNOUNCE.content);
+    const mayRewrite = wantRewrite && isTopLevelDocument(req);
 
     const reqHeaders = { ...req.headers, host: `${ST_HOST}:${ST_PORT}` };
-    // 只有可能改写时才关压缩，且仅针对页面文档请求（避免影响 JS/CSS/API）。
-    if (mayRewrite && acceptsHtml(req)) {
+    // 只有可能改写时才关压缩（只影响那一次顶层页面请求，不影响 JS/CSS/API/片段）。
+    if (mayRewrite) {
         reqHeaders['accept-encoding'] = 'identity';
     }
 
@@ -4085,18 +4053,12 @@ function proxyToST(req, res, targetPath) {
 
     const proxyReq = http.request(options, (proxyRes) => {
         // 修正可能指向内部地址的重定向，改为同源相对路径。
-        // SillyTavern 的重定向需要加上 /st 前缀
+        // SillyTavern 现在运行在根路径，无需再加 /st 前缀。
         const location = proxyRes.headers['location'];
         if (location) {
-            let newLocation = location
+            proxyRes.headers['location'] = location
                 .replace(`http://${ST_HOST}:${ST_PORT}`, '')
                 .replace(`http://localhost:${ST_PORT}`, '');
-
-            // 如果是相对路径且不是以 /st 开头，添加 /st 前缀
-            if (newLocation && newLocation.startsWith('/') && !newLocation.startsWith('/st')) {
-                newLocation = '/st' + newLocation;
-            }
-            proxyRes.headers['location'] = newLocation;
         }
 
         const contentType = String(proxyRes.headers['content-type'] || '');
@@ -4143,16 +4105,12 @@ function proxyToST(req, res, targetPath) {
 
 // 获取当前用户信息（必须在通用 /api 代理之前）
 app.get('/api/current-user', (req, res) => {
-    console.log('[/api/current-user] 收到请求');
-    console.log('[/api/current-user] Cookie:', req.headers.cookie);
-
     // 直接代理到 SillyTavern 的 /api/users/me
     proxyToST(req, res, '/api/users/me');
 });
 
 // /api/* 路径代理到 SillyTavern（用于登录、用户信息等 API）
 app.use('/api', (req, res) => {
-    console.log('[/api 通用代理] 拦截到请求:', req.method, req.originalUrl);
     proxyToST(req, res, req.originalUrl);
 });
 
@@ -4161,20 +4119,16 @@ app.use('/csrf-token', (req, res) => {
     proxyToST(req, res, req.originalUrl);
 });
 
-// /st 及其子路径代理到 SillyTavern
-app.use('/st', async (req, res, next) => {
-    // 检查是否已登录
-    const auth = await checkAuth(req);
-    if (!auth.authenticated) {
-        return res.redirect('/login');
-    }
+// 轻量判断浏览器是否带了 SillyTavern 的 session cookie（cookie 名为 session-xxxxxxxx）。
+// 只看 cookie 是否存在，不向 SillyTavern 发请求 —— 避免污染 cookie-session 的状态
+// （SillyTavern 用 cookie-session，CSRF token 存在 session cookie 里；任何额外的代理
+//  请求都可能让它返回新的 Set-Cookie，若被丢弃就会导致浏览器 CSRF token 与服务端失配）。
+function hasSessionCookie(req) {
+    const cookies = req.headers.cookie || '';
+    return /(?:^|;\s*)session-[a-f0-9]{8}=/.test(cookies);
+}
 
-    // 去掉 /st 前缀，转发到 SillyTavern 的根路径
-    const targetPath = req.originalUrl.replace(/^\/st/, '') || '/';
-    proxyToST(req, res, targetPath);
-});
-
-// SillyTavern 的静态资源路径（从 /st 页面加载的资源）
+// SillyTavern 的静态资源路径（从根路径页面加载的资源）
 const stStaticPaths = ['/lib/', '/scripts/', '/css/', '/assets/', '/characters/', '/backgrounds/', '/user/', '/thumbnails/', '/worlds/', '/groups/', '/chats/', '/themes/', '/extensions/', '/instruct/', '/context/', '/QuickReplies/', '/vectors/', '/backups/', '/sysprompt/', '/reasoning/', '/User Avatars/', '/NovelAI Settings/', '/KoboldAI Settings/', '/OpenAI Settings/', '/TextGen Settings/', '/movingUI/', '/default-content/', '/img/', '/sound/', '/fonts/'];
 
 app.use((req, res, next) => {
@@ -4220,6 +4174,22 @@ function acceptsHtml(req) {
     return accept.includes('text/html') || accept.includes('*/*') || accept === '';
 }
 
+// 判断是否「顶层页面导航」请求（即用户在地址栏打开页面那一次）。
+// 关键：只对这种请求做 HTML 改写，绝不碰 fetch/xhr 加载的 HTML 模板片段
+// （角色卡片、扩展面板等），否则缓冲改写会破坏这些片段，导致界面数据加载不出。
+// 用现代浏览器的 Sec-Fetch-* 头精确判断；老浏览器（无此头）回退到 acceptsHtml。
+function isTopLevelDocument(req) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+    const dest = req.headers['sec-fetch-dest'];
+    const mode = req.headers['sec-fetch-mode'];
+    if (dest !== undefined || mode !== undefined) {
+        // 浏览器明确告知意图：只有顶层文档导航才改写
+        return dest === 'document' || mode === 'navigate';
+    }
+    // 回退：无 Sec-Fetch 头时用 Accept 粗判
+    return acceptsHtml(req);
+}
+
 // 把 SillyTavern 页面里的标题/品牌名替换为站点标题，并按需注入公告脚本。
 function rebrandHtml(html) {
     // 标题替换（仅当自定义了标题时）
@@ -4227,14 +4197,11 @@ function rebrandHtml(html) {
         const title = escapeHtml(SITE.title);
         html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${title}</title>`);
     }
-    // 公告注入（在 </body> 前插入脚本）
-    if (ANNOUNCE.enabled && ANNOUNCE.content) {
+    // 公告注入（仅在完整 HTML 文档的 </body> 前插入；找不到 </body> 就不注入，
+    // 避免把脚本追加到 HTML 片段末尾而破坏页面）。
+    if (ANNOUNCE.enabled && ANNOUNCE.content && html.includes('</body>')) {
         const snippet = getAnnouncementSnippet();
-        if (html.includes('</body>')) {
-            html = html.replace('</body>', snippet + '</body>');
-        } else {
-            html += snippet;
-        }
+        html = html.replace('</body>', snippet + '</body>');
     }
     return html;
 }
