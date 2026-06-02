@@ -226,6 +226,15 @@ const ADMIN_HTML_HEAD = `<!DOCTYPE html>
     .row .field { flex:1; min-width: 160px; margin-bottom:0; }
     .checkline { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
     .checkline input { width:auto; }
+    /* 可收缩分组 */
+    .stgroup { border:1px solid var(--border); border-radius:10px; margin-bottom:10px; overflow:hidden; background:rgba(255,255,255,0.02); }
+    .stgroup > summary { cursor:pointer; padding:11px 14px; font-size:13.5px; font-weight:600; list-style:none;
+        display:flex; align-items:center; gap:8px; user-select:none; }
+    .stgroup > summary::-webkit-details-marker { display:none; }
+    .stgroup > summary::before { content:'▸'; font-size:12px; opacity:.7; transition:transform .15s; }
+    .stgroup[open] > summary::before { transform:rotate(90deg); }
+    .stgroup > summary:hover { background:rgba(255,255,255,0.04); }
+    .stgroup-body { padding:6px 14px 14px; border-top:1px solid var(--border); }
     /* 表格 */
     .tablewrap { overflow-x:auto; }
     table { width:100%; border-collapse: collapse; font-size: 13.5px; }
@@ -537,6 +546,185 @@ const ADMIN_HTML_BODY = `
         </div>
 
         <div class="section panel">
+            <h2>🛠️ SillyTavern 傻瓜配置 <small>常用参数，看不懂的开关在这里改</small></h2>
+            <div class="err" id="stSetErr"></div>
+            <div class="checkline" style="margin-bottom:10px;" id="stSetStatus">读取中…</div>
+
+            <div id="stSetBody">
+                <div style="display:flex;gap:10px;margin-bottom:10px;">
+                    <button class="btn ghost sm" type="button" id="stSetExpandAll">全部展开</button>
+                    <button class="btn ghost sm" type="button" id="stSetCollapseAll">全部收起</button>
+                </div>
+
+                <details class="stgroup" open>
+                    <summary>🌐 网络与访问</summary>
+                    <div class="stgroup-body">
+                        <label class="checkline">
+                            <input type="checkbox" id="stProxyEnabled"> 启用网络请求代理
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">让 SillyTavern 通过代理访问 OpenAI / Claude / Gemini 等外部 AI 接口，解决"连不上 / 超时"。</div>
+                        <div class="field" id="stProxyUrlField">
+                            <label for="stProxyUrl">代理地址</label>
+                            <input type="text" id="stProxyUrl" placeholder="例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:10808">
+                            <div class="hint">填本机代理软件地址。HTTP 代理用 http://，Shadowsocks/V2Ray 等用 socks5://。</div>
+                        </div>
+
+                        <label class="checkline" style="margin-top:6px;">
+                            <input type="checkbox" id="stListen"> 允许局域网 / 外部设备直接访问 SillyTavern
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">开启后同一网络的其它设备可直连 SillyTavern（端口 8000）。一般通过本服务访问即可，无需开启。</div>
+
+                        <label class="checkline">
+                            <input type="checkbox" id="stWhitelist"> 开启 IP 白名单保护（推荐开启）
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">只允许白名单内的 IP 直连 SillyTavern，更安全。关闭后任何 IP 都能直连。</div>
+
+                        <label class="checkline">
+                            <input type="checkbox" id="stCorsProxy"> 启用内置 CORS 代理
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">部分需要跨域的接口/扩展会用到。不清楚就保持关闭。</div>
+
+                        <div class="field" style="margin-top:8px;">
+                            <label for="stPort">SillyTavern 内部端口</label>
+                            <input type="number" id="stPort" min="1" max="65535" step="1" placeholder="8000">
+                            <div class="hint" style="color:#f0a;">⚠️ 改了端口后必须同时重启 SillyTavern 和本服务，否则会连不上。不懂请勿改。</div>
+                        </div>
+                    </div>
+                </details>
+
+                <details class="stgroup">
+                    <summary>🔒 安全与账户</summary>
+                    <div class="stgroup-body">
+                        <label class="checkline">
+                            <input type="checkbox" id="stEnableAccounts"> 启用多用户账户系统（本服务需要开启）
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">本注册/登录服务依赖该功能，请保持开启，否则用户无法登录。</div>
+
+                        <label class="checkline">
+                            <input type="checkbox" id="stDiscreetLogin"> 隐私登录（登录页不显示用户列表）
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">开启后登录页不再列出已有账号，需手动输入用户名，更隐私。</div>
+
+                        <label class="checkline">
+                            <input type="checkbox" id="stBasicAuth"> 开启访问密码（HTTP Basic Auth）
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">开启后直接访问 SillyTavern 会先弹出浏览器账号密码框。下面填账号密码。</div>
+                        <div class="row" id="stBasicAuthFields">
+                            <div class="field">
+                                <label for="stBasicUser">访问账号</label>
+                                <input type="text" id="stBasicUser" placeholder="user">
+                            </div>
+                            <div class="field">
+                                <label for="stBasicPass">访问密码</label>
+                                <input type="text" id="stBasicPass" placeholder="password">
+                            </div>
+                        </div>
+
+                        <div class="field" style="margin-top:6px;">
+                            <label for="stSessionTimeout">登录会话有效期（秒，-1 = 永不过期）</label>
+                            <input type="number" id="stSessionTimeout" min="-1" step="1" placeholder="-1">
+                            <div class="hint">超过这个时间未操作就需要重新登录。填 -1 永不过期。</div>
+                        </div>
+                    </div>
+                </details>
+
+                <details class="stgroup">
+                    <summary>💾 自动备份</summary>
+                    <div class="stgroup-body">
+                        <div class="row">
+                            <div class="field">
+                                <label for="stNumBackups">备份保留数量</label>
+                                <input type="number" id="stNumBackups" min="0" step="1" placeholder="50">
+                                <div class="hint">设置/角色等自动备份保留份数，超出删最旧。</div>
+                            </div>
+                            <div class="field">
+                                <label for="stChatMaxBackups">聊天备份上限（-1 = 不限制）</label>
+                                <input type="number" id="stChatMaxBackups" min="-1" step="1" placeholder="-1">
+                            </div>
+                        </div>
+                        <label class="checkline">
+                            <input type="checkbox" id="stChatBackup"> 启用聊天自动备份
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stChatIntegrity"> 备份时校验完整性
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stFullDataBackup"> 允许完整数据备份
+                        </label>
+                    </div>
+                </details>
+
+                <details class="stgroup">
+                    <summary>🧩 扩展与功能</summary>
+                    <div class="stgroup-body">
+                        <label class="checkline">
+                            <input type="checkbox" id="stExtEnabled"> 启用扩展系统
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stExtAutoUpdate"> 启动时自动更新扩展
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stExtModelsDownload"> 自动下载扩展所需模型
+                        </label>
+                        <div class="hint" style="margin:-4px 0 8px;">表情识别、图像描述等扩展会自动下载模型（较大，需联网）。</div>
+                        <label class="checkline">
+                            <input type="checkbox" id="stServerPlugins"> 启用服务器插件
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stServerPluginsUpdate"> 服务器插件自动更新
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stDownloadableTokenizers"> 允许下载分词器
+                        </label>
+                    </div>
+                </details>
+
+                <details class="stgroup">
+                    <summary>🖼️ 缩略图与性能</summary>
+                    <div class="stgroup-body">
+                        <label class="checkline">
+                            <input type="checkbox" id="stThumbEnabled"> 启用缩略图（角色/背景列表用小图，更快）
+                        </label>
+                        <div class="row" style="margin-top:8px;">
+                            <div class="field">
+                                <label for="stThumbQuality">缩略图质量（1–100）</label>
+                                <input type="number" id="stThumbQuality" min="1" max="100" step="1" placeholder="95">
+                            </div>
+                            <div class="field">
+                                <label for="stThumbFormat">缩略图格式</label>
+                                <select id="stThumbFormat">
+                                    <option value="jpg">jpg（更小）</option>
+                                    <option value="png">png（更清晰）</option>
+                                </select>
+                            </div>
+                        </div>
+                        <label class="checkline">
+                            <input type="checkbox" id="stLazyLoad"> 角色懒加载（角色很多时加快启动）
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stDiskCache"> 启用磁盘缓存
+                        </label>
+                    </div>
+                </details>
+
+                <details class="stgroup">
+                    <summary>⚙️ 启动与日志</summary>
+                    <div class="stgroup-body">
+                        <label class="checkline">
+                            <input type="checkbox" id="stBrowserLaunch"> SillyTavern 启动时自动打开浏览器
+                        </label>
+                        <label class="checkline">
+                            <input type="checkbox" id="stAccessLog"> 记录访问日志
+                        </label>
+                    </div>
+                </details>
+
+                <div class="hint" style="margin:12px 0 10px;color:#f0a;">⚠️ 以上修改保存后，需要<b>重启 SillyTavern</b> 才会生效（重启本服务不够）。</div>
+                <button class="btn" type="button" id="stSetBtn">保存 SillyTavern 配置</button>
+            </div>
+        </div>
+
+        <div class="section panel">
             <h2>👥 用户列表 <span class="muted" id="userCount" style="font-weight:400;font-size:12px;"></span></h2>
             <div class="tablewrap">
                 <table>
@@ -608,7 +796,7 @@ async function refreshSession() {
 async function showDash() {
     loginView.classList.add('hidden'); disabledView.classList.add('hidden');
     dashView.classList.remove('hidden');
-    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadSTConfig(), loadBackground(), loadCard(), loadFriendLinks()]);
+    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadSTConfig(), loadSTSettings(), loadBackground(), loadCard(), loadFriendLinks()]);
 }
 
 // ── 登录 / 登出 ──
@@ -768,6 +956,95 @@ $('stForm').addEventListener('submit', async (e) => {
     if (!r.ok) { showErr($('stErr'), (r.data && r.data.error) || '保存失败。'); return; }
     toast('SillyTavern 路径已保存（重启服务后生效）');
     await loadSTConfig();
+});
+
+// ── SillyTavern 傻瓜配置（直接读写 SillyTavern 的 config.yaml）──
+// 字段映射表：[元素id, 数据键, 类型]。类型 b=复选框 t=文本(去空格) p=密码(不去空格) n=数字 s=下拉。
+var ST_SET_MAP = [
+    ['stProxyEnabled', 'requestProxyEnabled', 'b'],
+    ['stProxyUrl', 'requestProxyUrl', 't'],
+    ['stListen', 'listen', 'b'],
+    ['stWhitelist', 'whitelistMode', 'b'],
+    ['stCorsProxy', 'enableCorsProxy', 'b'],
+    ['stPort', 'port', 'n'],
+    ['stEnableAccounts', 'enableUserAccounts', 'b'],
+    ['stDiscreetLogin', 'enableDiscreetLogin', 'b'],
+    ['stBasicAuth', 'basicAuthMode', 'b'],
+    ['stBasicUser', 'basicAuthUsername', 't'],
+    ['stBasicPass', 'basicAuthPassword', 'p'],
+    ['stSessionTimeout', 'sessionTimeout', 'n'],
+    ['stNumBackups', 'numberOfBackups', 'n'],
+    ['stChatMaxBackups', 'chatMaxTotalBackups', 'n'],
+    ['stChatBackup', 'chatBackupEnabled', 'b'],
+    ['stChatIntegrity', 'chatCheckIntegrity', 'b'],
+    ['stFullDataBackup', 'allowFullDataBackup', 'b'],
+    ['stExtEnabled', 'extensionsEnabled', 'b'],
+    ['stExtAutoUpdate', 'extensionsAutoUpdate', 'b'],
+    ['stExtModelsDownload', 'extensionModelsAutoDownload', 'b'],
+    ['stServerPlugins', 'enableServerPlugins', 'b'],
+    ['stServerPluginsUpdate', 'enableServerPluginsAutoUpdate', 'b'],
+    ['stDownloadableTokenizers', 'enableDownloadableTokenizers', 'b'],
+    ['stThumbEnabled', 'thumbnailsEnabled', 'b'],
+    ['stThumbQuality', 'thumbnailsQuality', 'n'],
+    ['stThumbFormat', 'thumbnailsFormat', 's'],
+    ['stLazyLoad', 'lazyLoadCharacters', 'b'],
+    ['stDiskCache', 'useDiskCache', 'b'],
+    ['stBrowserLaunch', 'browserLaunch', 'b'],
+    ['stAccessLog', 'enableAccessLog', 'b'],
+];
+function stSetSyncFields() {
+    var pf = $('stProxyUrlField'); if (pf) pf.style.display = $('stProxyEnabled').checked ? 'block' : 'none';
+    var bf = $('stBasicAuthFields'); if (bf) bf.style.display = $('stBasicAuth').checked ? 'flex' : 'none';
+}
+async function loadSTSettings() {
+    const { ok, data } = await api('GET', '/admin/api/st-settings');
+    const status = $('stSetStatus'), body = $('stSetBody');
+    if (!ok || !data) {
+        if (status) status.textContent = '无法读取 SillyTavern 配置（请先在上方设置正确的安装目录）';
+        if (body) body.style.display = 'none';
+        return;
+    }
+    if (!data.exists) {
+        if (status) status.textContent = '⚠️ 未找到 config.yaml：' + (data.configPath || '');
+        if (body) body.style.display = 'none';
+        return;
+    }
+    if (status) status.textContent = '配置文件：' + data.configPath;
+    if (body) body.style.display = 'block';
+    for (var i = 0; i < ST_SET_MAP.length; i++) {
+        var id = ST_SET_MAP[i][0], key = ST_SET_MAP[i][1], type = ST_SET_MAP[i][2];
+        var el = $(id); if (!el) continue;
+        if (type === 'b') el.checked = !!data[key];
+        else el.value = (data[key] != null ? data[key] : '');
+    }
+    stSetSyncFields();
+}
+if ($('stProxyEnabled')) $('stProxyEnabled').addEventListener('change', stSetSyncFields);
+if ($('stBasicAuth')) $('stBasicAuth').addEventListener('change', stSetSyncFields);
+if ($('stSetExpandAll')) $('stSetExpandAll').addEventListener('click', function () {
+    var ds = document.querySelectorAll('#stSetBody .stgroup'); for (var i = 0; i < ds.length; i++) ds[i].open = true;
+});
+if ($('stSetCollapseAll')) $('stSetCollapseAll').addEventListener('click', function () {
+    var ds = document.querySelectorAll('#stSetBody .stgroup'); for (var i = 0; i < ds.length; i++) ds[i].open = false;
+});
+if ($('stSetBtn')) $('stSetBtn').addEventListener('click', async () => {
+    hideErr($('stSetErr'));
+    const btn = $('stSetBtn'); btn.disabled = true;
+    var payload = {};
+    for (var i = 0; i < ST_SET_MAP.length; i++) {
+        var id = ST_SET_MAP[i][0], key = ST_SET_MAP[i][1], type = ST_SET_MAP[i][2];
+        var el = $(id); if (!el) continue;
+        if (type === 'b') payload[key] = el.checked;
+        else if (type === 'n') payload[key] = parseInt(el.value, 10);
+        else if (type === 'p') payload[key] = el.value;
+        else if (type === 's') payload[key] = el.value;
+        else payload[key] = el.value.trim();
+    }
+    const r = await api('PUT', '/admin/api/st-settings', payload);
+    btn.disabled = false;
+    if (!r.ok) { showErr($('stSetErr'), (r.data && r.data.error) || '保存失败。'); return; }
+    toast('已保存到 SillyTavern config.yaml（需重启 SillyTavern 生效）');
+    await loadSTSettings();
 });
 
 // ── 背景设置 ──
@@ -1037,6 +1314,7 @@ export function mountAdmin(app, deps) {
         friendLinks, saveFriendLinksConfig,
         backupTempConfig, saveBackupConfig, getTempDir,
         sillyTavernConfig, saveSillyTavernConfig, ST_DIR,
+        ST_CONFIG_PATH, readSillyTavernSettings, saveSillyTavernSettings,
         mdRendererJs,
     } = deps;
 
@@ -1400,6 +1678,35 @@ export function mountAdmin(app, deps) {
         } catch (err) {
             console.error('[后台] 保存 SillyTavern 配置失败:', err);
             return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
+        }
+    });
+
+    // 获取 SillyTavern config.yaml「傻瓜配置」当前值
+    app.get('/admin/api/st-settings', requireAdmin, (_req, res) => {
+        try {
+            if (typeof readSillyTavernSettings !== 'function') {
+                return res.status(500).json({ error: '服务未提供该功能。' });
+            }
+            return res.json(readSillyTavernSettings());
+        } catch (err) {
+            console.error('[后台] 读取 SillyTavern 配置失败:', err);
+            return res.status(500).json({ error: '读取 SillyTavern config.yaml 失败：' + err.message });
+        }
+    });
+
+    // 保存 SillyTavern config.yaml「傻瓜配置」（写回 SillyTavern 的 config.yaml）
+    app.put('/admin/api/st-settings', requireAdmin, jsonParser, (req, res) => {
+        try {
+            if (typeof saveSillyTavernSettings !== 'function') {
+                return res.status(500).json({ error: '服务未提供该功能。' });
+            }
+            // 直接把整个 body 交给写入函数；它按字段定义表逐项校验类型，忽略未知键。
+            saveSillyTavernSettings(req.body || {});
+            console.log('[后台] 已更新 SillyTavern config.yaml 傻瓜配置');
+            return res.json({ ok: true, ...readSillyTavernSettings() });
+        } catch (err) {
+            console.error('[后台] 保存 SillyTavern 配置失败:', err);
+            return res.status(500).json({ error: '保存失败：' + err.message });
         }
     });
 

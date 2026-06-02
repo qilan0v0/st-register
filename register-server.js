@@ -165,6 +165,110 @@ function saveSillyTavernConfig(patch) {
     fs.writeFileSync(OWN_CONFIG_PATH, doc.toString());
 }
 
+// ─── SillyTavern config.yaml「傻瓜配置」读写 ───────────────────────────────────
+// 这里读写的是 SillyTavern 自己的 config.yaml（ST_CONFIG_PATH），只暴露最常用、
+// 但新手容易困惑的一小部分参数，用友好的开关/输入框呈现。写回时用 parseDocument
+// 保留文件原有结构与其它字段，绝不动未涉及的项。修改后需重启 SillyTavern 才生效。
+
+// 字段定义：单一数据源，读、写、前端都按它来。type: bool | str | num | select
+// path 是 config.yaml 里的键路径；bdefault 给布尔默认值（true 表示「缺省即开」）。
+const ST_SETTING_FIELDS = [
+    // 🌐 网络与访问
+    { key: 'requestProxyEnabled', path: ['requestProxy', 'enabled'], type: 'bool', bdefault: false },
+    { key: 'requestProxyUrl', path: ['requestProxy', 'url'], type: 'str' },
+    { key: 'listen', path: ['listen'], type: 'bool', bdefault: false },
+    { key: 'whitelistMode', path: ['whitelistMode'], type: 'bool', bdefault: true },
+    { key: 'enableCorsProxy', path: ['enableCorsProxy'], type: 'bool', bdefault: false },
+    { key: 'port', path: ['port'], type: 'num', ndefault: 8000 },
+    // 🔒 安全与账户
+    { key: 'enableUserAccounts', path: ['enableUserAccounts'], type: 'bool', bdefault: true },
+    { key: 'enableDiscreetLogin', path: ['enableDiscreetLogin'], type: 'bool', bdefault: false },
+    { key: 'basicAuthMode', path: ['basicAuthMode'], type: 'bool', bdefault: false },
+    { key: 'basicAuthUsername', path: ['basicAuthUser', 'username'], type: 'str' },
+    { key: 'basicAuthPassword', path: ['basicAuthUser', 'password'], type: 'str' },
+    { key: 'sessionTimeout', path: ['sessionTimeout'], type: 'num', ndefault: -1, min: -1 },
+    // 💾 备份
+    { key: 'numberOfBackups', path: ['backups', 'common', 'numberOfBackups'], type: 'num', ndefault: 50, min: 0 },
+    { key: 'chatBackupEnabled', path: ['backups', 'chat', 'enabled'], type: 'bool', bdefault: true },
+    { key: 'chatCheckIntegrity', path: ['backups', 'chat', 'checkIntegrity'], type: 'bool', bdefault: true },
+    { key: 'chatMaxTotalBackups', path: ['backups', 'chat', 'maxTotalBackups'], type: 'num', ndefault: -1, min: -1 },
+    { key: 'allowFullDataBackup', path: ['backups', 'allowFullDataBackup'], type: 'bool', bdefault: true },
+    // 🧩 扩展与功能
+    { key: 'extensionsEnabled', path: ['extensions', 'enabled'], type: 'bool', bdefault: true },
+    { key: 'extensionsAutoUpdate', path: ['extensions', 'autoUpdate'], type: 'bool', bdefault: true },
+    { key: 'extensionModelsAutoDownload', path: ['extensions', 'models', 'autoDownload'], type: 'bool', bdefault: true },
+    { key: 'enableServerPlugins', path: ['enableServerPlugins'], type: 'bool', bdefault: false },
+    { key: 'enableServerPluginsAutoUpdate', path: ['enableServerPluginsAutoUpdate'], type: 'bool', bdefault: true },
+    { key: 'enableDownloadableTokenizers', path: ['enableDownloadableTokenizers'], type: 'bool', bdefault: true },
+    // 🖼️ 缩略图与性能
+    { key: 'thumbnailsEnabled', path: ['thumbnails', 'enabled'], type: 'bool', bdefault: true },
+    { key: 'thumbnailsQuality', path: ['thumbnails', 'quality'], type: 'num', ndefault: 95, min: 1, max: 100 },
+    { key: 'thumbnailsFormat', path: ['thumbnails', 'format'], type: 'select', options: ['jpg', 'png'], sdefault: 'jpg' },
+    { key: 'lazyLoadCharacters', path: ['performance', 'lazyLoadCharacters'], type: 'bool', bdefault: false },
+    { key: 'useDiskCache', path: ['performance', 'useDiskCache'], type: 'bool', bdefault: true },
+    // ⚙️ 启动与日志
+    { key: 'browserLaunch', path: ['browserLaunch', 'enabled'], type: 'bool', bdefault: true },
+    { key: 'enableAccessLog', path: ['logging', 'enableAccessLog'], type: 'bool', bdefault: true },
+];
+
+function getIn(obj, keyPath) {
+    let cur = obj;
+    for (const k of keyPath) {
+        if (cur == null || typeof cur !== 'object') return undefined;
+        cur = cur[k];
+    }
+    return cur;
+}
+
+// 读取当前 SillyTavern config.yaml 中这些参数的值（每次都读最新文件）。
+function readSillyTavernSettings() {
+    let cfg = {};
+    const exists = fs.existsSync(ST_CONFIG_PATH);
+    if (exists) {
+        cfg = yaml.parse(fs.readFileSync(ST_CONFIG_PATH, 'utf8')) || {};
+    }
+    const out = { exists, configPath: ST_CONFIG_PATH };
+    for (const f of ST_SETTING_FIELDS) {
+        const v = getIn(cfg, f.path);
+        if (f.type === 'bool') {
+            out[f.key] = (v === undefined ? !!f.bdefault : v === true);
+        } else if (f.type === 'num') {
+            out[f.key] = (v == null ? f.ndefault : v);
+        } else if (f.type === 'select') {
+            out[f.key] = (v == null ? f.sdefault : String(v));
+        } else { // str
+            out[f.key] = (v == null ? '' : String(v));
+        }
+    }
+    return out;
+}
+
+// 把后台传来的补丁写回 SillyTavern config.yaml（保留注释与其它字段）。
+function saveSillyTavernSettings(patch) {
+    if (!fs.existsSync(ST_CONFIG_PATH)) {
+        throw new Error('未找到 SillyTavern config.yaml: ' + ST_CONFIG_PATH);
+    }
+    const doc = yaml.parseDocument(fs.readFileSync(ST_CONFIG_PATH, 'utf8'));
+    for (const f of ST_SETTING_FIELDS) {
+        const v = patch[f.key];
+        if (v === undefined) continue;
+        if (f.type === 'bool') {
+            if (typeof v === 'boolean') doc.setIn(f.path, v);
+        } else if (f.type === 'num') {
+            let n = parseInt(v, 10);
+            if (!Number.isFinite(n)) continue;
+            if (f.min != null) n = Math.max(f.min, n);
+            if (f.max != null) n = Math.min(f.max, n);
+            doc.setIn(f.path, n);
+        } else if (f.type === 'select') {
+            if (f.options.includes(String(v))) doc.setIn(f.path, String(v));
+        } else { // str
+            if (typeof v === 'string') doc.setIn(f.path, v);
+        }
+    }
+    fs.writeFileSync(ST_CONFIG_PATH, doc.toString());
+}
+
 // 清理旧的临时文件
 function cleanupOldTempFiles() {
     try {
@@ -4004,6 +4108,7 @@ mountAdmin(app, {
     friendLinks: FRIEND_LINKS, saveFriendLinksConfig,
     backupTempConfig: BACKUP_TEMP_CONFIG, saveBackupConfig, getTempDir,
     sillyTavernConfig: { path: stPath }, saveSillyTavernConfig, ST_DIR,
+    ST_CONFIG_PATH, readSillyTavernSettings, saveSillyTavernSettings,
     mdRendererJs: MD_RENDERER_JS,
 });
 
