@@ -4143,6 +4143,15 @@ function proxyToST(req, res, targetPath) {
     const mayRewrite = wantRewrite && isTopLevelDocument(req);
 
     const reqHeaders = { ...req.headers, host: `${ST_HOST}:${ST_PORT}` };
+    // 反向代理在 SillyTavern 之前：本服务始终从 127.0.0.1 连接 SillyTavern，而 SillyTavern
+    // 默认开了 whitelistMode + enableForwardedWhitelist。若把公网入口/隧道加的客户端 IP 转发头
+    // 原样透传给 SillyTavern，它会拿真实公网 IP 去比对白名单 [127.0.0.1,::1] → 判定不在白名单
+    // → 403，导致经本服务访问 SillyTavern 全部被拦。这里剥离这些头，让 SillyTavern 只看到可信
+    // 的本地连接。（如需在 SillyTavern 侧按真实 IP 限流，可在其 config 关掉转发白名单后另行处理。）
+    for (const h of ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
+        'x-forwarded-port', 'x-real-ip', 'cf-connecting-ip', 'true-client-ip', 'x-client-ip', 'forwarded']) {
+        delete reqHeaders[h];
+    }
     // 只有可能改写时才关压缩（只影响那一次顶层页面请求，不影响 JS/CSS/API/片段）。
     if (mayRewrite) {
         reqHeaders['accept-encoding'] = 'identity';
@@ -4247,25 +4256,39 @@ app.use('/csrf-token', (req, res) => {
     proxyToST(req, res, req.originalUrl);
 });
 
-// 轻量判断浏览器是否带了 SillyTavern 的 session cookie（cookie 名为 session-xxxxxxxx）。
-// 只看 cookie 是否存在，不向 SillyTavern 发请求 —— 避免污染 cookie-session 的状态
-// （SillyTavern 用 cookie-session，CSRF token 存在 session cookie 里；任何额外的代理
-//  请求都可能让它返回新的 Set-Cookie，若被丢弃就会导致浏览器 CSRF token 与服务端失配）。
-function hasSessionCookie(req) {
-    const cookies = req.headers.cookie || '';
-    return /(?:^|;\s*)session-[a-f0-9]{8}=/.test(cookies);
+// SillyTavern 的 session cookie 名 = session-<sha256(主机名)[:8]>（见其 getCookieSessionName）。
+// register-server 与 SillyTavern 跑在同一台机器（ST_HOST 默认 127.0.0.1、且本服务直接读取
+// SillyTavern 本地的 config.yaml），所以这里能算出与 SillyTavern 完全一致的当前 cookie 名。
+// 关键：必须只认这个「当前名字」的 cookie，绝不能用宽松正则匹配任意 session-xxxxxxxx ——
+// 否则浏览器里残留的「旧主机名/旧部署」遗留 cookie（仍带着 handle）会被误判为已登录，导致
+// /login 一直跳 /dashboard，而 SillyTavern 用的是另一个当前名字的匿名 cookie，于是把 /
+// 又跳回 /login，形成死循环（本机干净所以本地不复现，公网/容器换过主机名就中招）。
+const ST_SESSION_COOKIE_NAME = (() => {
+    const hostname = os.hostname() || 'localhost';
+    const suffix = crypto.createHash('sha256').update(hostname).digest('hex').slice(0, 8);
+    return `session-${suffix}`;
+})();
+console.log(`SillyTavern 会话 cookie 名: ${ST_SESSION_COOKIE_NAME}`);
+
+// 从 Cookie 头里取出指定名字的 cookie 值（精确匹配名字，避开 .sig 等同前缀 cookie）。
+function readCookie(req, name) {
+    const header = req.headers.cookie || '';
+    for (const part of header.split(';')) {
+        const i = part.indexOf('=');
+        if (i < 0) continue;
+        if (part.slice(0, i).trim() === name) {
+            return part.slice(i + 1).trim();
+        }
+    }
+    return null;
 }
 
-// 解码 SillyTavern 的 cookie-session（cookie 名 session-xxxxxxxx，值为 base64(JSON)）。
-// 纯本地解析，不向 SillyTavern 发任何请求，不会污染 session / CSRF token。
-// 注意：这里不校验签名（.sig），仅用于「是否已登录」的页面跳转判断；真正的鉴权
-// 由 SillyTavern 自己在各 API 上完成，伪造 cookie 无法通过 SillyTavern 的校验。
+// 解码 SillyTavern 的 cookie-session（值为 base64(JSON)）。纯本地解析，不向 SillyTavern
+// 发任何请求，不会污染 session / CSRF token。注意：不校验签名（.sig），仅用于「是否已登录」
+// 的页面跳转判断；真正的鉴权由 SillyTavern 自己在各 API 上完成，伪造 cookie 过不了它的校验。
 function getSTSession(req) {
-    const cookies = req.headers.cookie || '';
-    // 匹配主 session cookie 的值；.sig 那个的名字后面不是「=」，不会被匹配到。
-    const m = cookies.match(/(?:^|;\s*)session-[a-f0-9]{8}=([^;]+)/);
-    if (!m) return null;
-    let val = m[1];
+    let val = readCookie(req, ST_SESSION_COOKIE_NAME);
+    if (!val) return null;
     try { val = decodeURIComponent(val); } catch { /* 非编码值，原样使用 */ }
     try {
         const json = Buffer.from(val, 'base64').toString('utf8');
