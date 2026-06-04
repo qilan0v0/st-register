@@ -2662,22 +2662,28 @@ function buildDashboardPage() {
                 // 不要自动跳转，让用户可以看到错误信息
             });
 
-        // 从 localStorage 加载配置
-        const savedPlatform = localStorage.getItem('backupPlatform') || 'modelscope';
-        const savedModelScopeToken = localStorage.getItem('modelScopeToken');
-        const savedModelScopeDataset = localStorage.getItem('modelScopeDataset');
-        const savedHuggingFaceToken = localStorage.getItem('huggingFaceToken');
-        const savedHuggingFaceDataset = localStorage.getItem('huggingFaceDataset');
-        const savedGitUserName = localStorage.getItem('gitUserName');
-        const savedGitUserEmail = localStorage.getItem('gitUserEmail');
+        // 从服务器加载备份配置（存在用户数据目录下，换设备/恢复后自动还原）。
+        // platform 切换是纯 UI 状态，仍用 localStorage 记一下，避免每次默认跳回魔搭。
+        function applyBackupConfig(cfg) {
+            cfg = cfg || {};
+            const savedPlatform = cfg.platform || localStorage.getItem('backupPlatform') || 'modelscope';
+            platformSelect.value = savedPlatform;
+            if (cfg.modelScopeToken) modelScopeTokenInput.value = cfg.modelScopeToken;
+            if (cfg.modelScopeDataset) modelScopeDatasetInput.value = cfg.modelScopeDataset;
+            if (cfg.huggingFaceToken) huggingFaceTokenInput.value = cfg.huggingFaceToken;
+            if (cfg.huggingFaceDataset) huggingFaceDatasetInput.value = cfg.huggingFaceDataset;
+            if (cfg.gitUserName) gitUserNameInput.value = cfg.gitUserName;
+            if (cfg.gitUserEmail) gitUserEmailInput.value = cfg.gitUserEmail;
+            switchPlatform(); // 按 platform 显示对应配置区
+        }
 
-        platformSelect.value = savedPlatform;
-        if (savedModelScopeToken) modelScopeTokenInput.value = savedModelScopeToken;
-        if (savedModelScopeDataset) modelScopeDatasetInput.value = savedModelScopeDataset;
-        if (savedHuggingFaceToken) huggingFaceTokenInput.value = savedHuggingFaceToken;
-        if (savedHuggingFaceDataset) huggingFaceDatasetInput.value = savedHuggingFaceDataset;
-        if (savedGitUserName) gitUserNameInput.value = savedGitUserName;
-        if (savedGitUserEmail) gitUserEmailInput.value = savedGitUserEmail;
+        fetch('/api/backup-config')
+            .then(r => r.ok ? r.json() : {})
+            .then(applyBackupConfig)
+            .catch(err => {
+                console.error('加载备份配置失败:', err);
+                applyBackupConfig(null); // 失败也要初始化 UI
+            });
 
         // 平台切换
         function switchPlatform() {
@@ -2695,47 +2701,40 @@ function buildDashboardPage() {
             }
         }
 
-        platformSelect.addEventListener('change', switchPlatform);
+        // 把当前表单收集成配置对象
+        function collectBackupConfig() {
+            return {
+                platform: platformSelect.value,
+                modelScopeToken: modelScopeTokenInput.value.trim(),
+                modelScopeDataset: modelScopeDatasetInput.value.trim(),
+                huggingFaceToken: huggingFaceTokenInput.value.trim(),
+                huggingFaceDataset: huggingFaceDatasetInput.value.trim(),
+                gitUserName: gitUserNameInput.value.trim(),
+                gitUserEmail: gitUserEmailInput.value.trim(),
+            };
+        }
+
+        // 防抖保存到服务器（存进用户数据目录，换设备/恢复后免重配）
+        let saveCfgTimer = null;
+        function saveBackupConfig() {
+            clearTimeout(saveCfgTimer);
+            saveCfgTimer = setTimeout(() => {
+                fetch('/api/backup-config', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(collectBackupConfig()),
+                }).catch(err => console.error('保存备份配置失败:', err));
+            }, 600);
+        }
+
+        platformSelect.addEventListener('change', () => { switchPlatform(); saveBackupConfig(); });
         switchPlatform(); // 初始化显示
 
-        // 保存配置到 localStorage（使用 input 事件实时保存）
-        modelScopeTokenInput.addEventListener('input', () => {
-            localStorage.setItem('modelScopeToken', modelScopeTokenInput.value.trim());
-        });
-        modelScopeTokenInput.addEventListener('blur', () => {
-            localStorage.setItem('modelScopeToken', modelScopeTokenInput.value.trim());
-        });
-        modelScopeDatasetInput.addEventListener('input', () => {
-            localStorage.setItem('modelScopeDataset', modelScopeDatasetInput.value.trim());
-        });
-        modelScopeDatasetInput.addEventListener('blur', () => {
-            localStorage.setItem('modelScopeDataset', modelScopeDatasetInput.value.trim());
-        });
-
-        huggingFaceTokenInput.addEventListener('input', () => {
-            localStorage.setItem('huggingFaceToken', huggingFaceTokenInput.value.trim());
-        });
-        huggingFaceTokenInput.addEventListener('blur', () => {
-            localStorage.setItem('huggingFaceToken', huggingFaceTokenInput.value.trim());
-        });
-        huggingFaceDatasetInput.addEventListener('input', () => {
-            localStorage.setItem('huggingFaceDataset', huggingFaceDatasetInput.value.trim());
-        });
-        huggingFaceDatasetInput.addEventListener('blur', () => {
-            localStorage.setItem('huggingFaceDataset', huggingFaceDatasetInput.value.trim());
-        });
-
-        gitUserNameInput.addEventListener('input', () => {
-            localStorage.setItem('gitUserName', gitUserNameInput.value.trim());
-        });
-        gitUserNameInput.addEventListener('blur', () => {
-            localStorage.setItem('gitUserName', gitUserNameInput.value.trim());
-        });
-        gitUserEmailInput.addEventListener('input', () => {
-            localStorage.setItem('gitUserEmail', gitUserEmailInput.value.trim());
-        });
-        gitUserEmailInput.addEventListener('blur', () => {
-            localStorage.setItem('gitUserEmail', gitUserEmailInput.value.trim());
+        // 任一配置项变化即防抖保存到服务器
+        [modelScopeTokenInput, modelScopeDatasetInput, huggingFaceTokenInput,
+         huggingFaceDatasetInput, gitUserNameInput, gitUserEmailInput].forEach((el) => {
+            el.addEventListener('input', saveBackupConfig);
+            el.addEventListener('blur', saveBackupConfig);
         });
 
         // 备份数据
@@ -3062,15 +3061,16 @@ function buildDashboardPage() {
             const confirmed = await customConfirm('确定要退出登录吗？');
             if (confirmed) {
                 try {
-                    await fetch('/api/users/logout', {
+                    // 调用本服务的登出接口：直接清除 SillyTavern 的 session cookie。
+                    await fetch('/api/logout', {
                         method: 'POST',
                         credentials: 'include'
                     });
                 } catch (e) {
                     console.error('退出登录失败:', e);
                 }
-                // 无论是否成功，都跳转到登录页
-                window.location.href = '/login';
+                // 无论是否成功，都跳转到登录页（用 replace 避免后退键回到 dashboard）
+                window.location.replace('/login');
             }
         });
     </script>
@@ -4243,6 +4243,104 @@ app.get('/api/current-user', async (req, res) => {
     } catch (err) {
         console.error('[current-user] 读取用户信息失败:', err);
         return res.status(500).json({ error: '读取用户信息失败' });
+    }
+});
+
+// 退出登录：直接在本服务端清掉 SillyTavern 的 session cookie。
+// SillyTavern 用 cookie-session（整个会话就存在 cookie 里，服务端无会话存储），所以
+// 把浏览器里的 session cookie 及其签名 cookie(.sig) 过期，就等于彻底登出 —— 无需把
+// POST /api/users/logout 代理给 SillyTavern（公网部署下那条请求会因白名单/CSRF 被拒，
+// 导致 cookie 没被清除，跳回 /login 又被 isLoggedIn 判为已登录而弹回 /dashboard）。
+app.post('/api/logout', (req, res) => {
+    // 用与 SillyTavern 完全一致的属性把两个 cookie 立刻过期。
+    // SillyTavern cookie-session 配置：sameSite=lax, httpOnly, path=/。
+    const expire = (name) =>
+        `${name}=; Path=/; HttpOnly; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0`;
+    res.setHeader('Set-Cookie', [
+        expire(ST_SESSION_COOKIE_NAME),
+        expire(ST_SESSION_COOKIE_NAME + '.sig'),
+    ]);
+    return res.json({ ok: true });
+});
+
+// ─── 备份配置（按用户存到其数据目录，换设备/恢复后免重配）──────────────────────
+// 存储位置：DATA_ROOT/<handle>/user/backup-config.json。放在 user/ 子目录下，会随
+// 整包备份一起打包，恢复到新机器后配置自动还原。这里解出登录 handle，校验后读写该文件。
+// token 等敏感信息只落在该用户自己的数据目录里（与 SillyTavern 存放用户私密数据同级）。
+
+const BACKUP_CONFIG_FILENAME = 'backup-config.json';
+
+// 解析当前登录用户的 handle；未登录返回 ''。
+function currentHandle(req) {
+    const sess = getSTSession(req);
+    return (sess && typeof sess.handle === 'string') ? sess.handle : '';
+}
+
+// 取某用户的备份配置文件绝对路径（确保落在该用户的 user 目录内，防止路径穿越）。
+function backupConfigPathFor(handle) {
+    const userDir = path.join(DATA_ROOT, handle, 'user');
+    return path.join(userDir, BACKUP_CONFIG_FILENAME);
+}
+
+// 允许保存的字段白名单（避免把任意内容写进文件）。
+const BACKUP_CONFIG_KEYS = [
+    'platform', 'modelScopeToken', 'modelScopeDataset',
+    'huggingFaceToken', 'huggingFaceDataset', 'gitUserName', 'gitUserEmail',
+];
+
+// 读取当前用户的备份配置
+app.get('/api/backup-config', async (req, res) => {
+    try {
+        const handle = currentHandle(req);
+        if (!handle) return res.status(401).json({ error: '未登录' });
+        const user = await storage.getItem(toKey(handle));
+        if (!user) return res.status(404).json({ error: '用户不存在' });
+
+        const file = backupConfigPathFor(handle);
+        if (!fs.existsSync(file)) {
+            return res.json({}); // 还没配置过，返回空对象
+        }
+        let cfg = {};
+        try {
+            cfg = JSON.parse(fs.readFileSync(file, 'utf8')) || {};
+        } catch (e) {
+            console.error('[备份配置] 解析失败，返回空配置:', e.message);
+            return res.json({});
+        }
+        // 只回传白名单字段
+        const out = {};
+        for (const k of BACKUP_CONFIG_KEYS) {
+            if (cfg[k] !== undefined) out[k] = cfg[k];
+        }
+        return res.json(out);
+    } catch (err) {
+        console.error('[备份配置] 读取失败:', err);
+        return res.status(500).json({ error: '读取备份配置失败' });
+    }
+});
+
+// 保存当前用户的备份配置（整体覆盖白名单字段）
+app.put('/api/backup-config', jsonParser, async (req, res) => {
+    try {
+        const handle = currentHandle(req);
+        if (!handle) return res.status(401).json({ error: '未登录' });
+        const user = await storage.getItem(toKey(handle));
+        if (!user) return res.status(404).json({ error: '用户不存在' });
+
+        const body = req.body || {};
+        const cfg = {};
+        for (const k of BACKUP_CONFIG_KEYS) {
+            if (typeof body[k] === 'string') cfg[k] = body[k];
+        }
+
+        const file = backupConfigPathFor(handle);
+        const dir = path.dirname(file);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(file, JSON.stringify(cfg, null, 2), 'utf8');
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error('[备份配置] 保存失败:', err);
+        return res.status(500).json({ error: '保存备份配置失败' });
     }
 });
 
