@@ -4209,10 +4209,32 @@ function proxyToST(req, res, targetPath) {
     req.pipe(proxyReq);
 }
 
-// 获取当前用户信息（必须在通用 /api 代理之前）
-app.get('/api/current-user', (req, res) => {
-    // 直接代理到 SillyTavern 的 /api/users/me
-    proxyToST(req, res, '/api/users/me');
+// 获取当前用户信息（必须在通用 /api 代理之前）。
+// 不再代理到 SillyTavern 的 /api/users/me —— 在公网部署下，经反向代理转发的请求会因
+// SillyTavern 的 IP 白名单 / 转发头校验 / cookie 签名等机制被判定未认证而返回 403。
+// 这里改为：从 session cookie 本地解出登录 handle，再直接读取与 SillyTavern 共用的
+// node-persist 用户存储，零代理、零额外请求，稳定可靠。
+app.get('/api/current-user', async (req, res) => {
+    try {
+        const sess = getSTSession(req);
+        const handle = (sess && typeof sess.handle === 'string') ? sess.handle : '';
+        if (!handle) {
+            return res.status(401).json({ error: '未登录' });
+        }
+        const user = await storage.getItem(toKey(handle));
+        if (!user) {
+            return res.status(404).json({ error: '用户不存在: ' + handle });
+        }
+        return res.json({
+            handle: user.handle,
+            name: user.name || user.handle,
+            admin: !!user.admin,
+            enabled: user.enabled !== false,
+        });
+    } catch (err) {
+        console.error('[current-user] 读取用户信息失败:', err);
+        return res.status(500).json({ error: '读取用户信息失败' });
+    }
 });
 
 // /api/* 路径代理到 SillyTavern（用于登录、用户信息等 API）
