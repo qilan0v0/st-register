@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -2081,9 +2082,9 @@ function buildDashboardPage() {
             -webkit-backdrop-filter: blur(22px) saturate(160%);
             border: 1px solid rgba(255,255,255,0.09);
             border-radius: 22px;
-            padding: 46px 42px;
+            padding: 30px 34px;
             width: 100%;
-            max-width: 600px;
+            max-width: 980px;
             max-height: calc(100vh - 40px);
             overflow-y: auto;
             box-shadow: 0 24px 70px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07);
@@ -2419,21 +2420,97 @@ function buildDashboardPage() {
         .logout-link a:hover {
             color: #fff;
         }
+
+        /* ── PC 两栏布局 ───────────────────────────────────────────── */
+        /* 顶部栏：左边标题，右边用户信息 + 退出 */
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 24px;
+            margin-bottom: 20px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .topbar-left { text-align: left; }
+        .topbar-left .logo { text-align: left; margin: 0 0 4px; }
+        .topbar-left .brand-logo { margin: 0 0 6px; }
+        .topbar-left h1 { text-align: left; font-size: 24px; margin-bottom: 4px; }
+        .topbar-left .subtitle { text-align: left; margin-bottom: 0; }
+        .topbar-right {
+            display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+            flex-shrink: 0;
+        }
+        .topbar-right .user-info { margin-bottom: 0; padding: 12px 18px; }
+        .topbar-right .logout-link { margin-top: 0; }
+        .topbar-actions { display:flex; align-items:center; gap:12px; }
+        .topbar-actions .btn-reset { flex: 0 0 auto; }
+        .btn-reset:hover { background:rgba(239,68,68,0.25) !important; color:#fff !important; }
+
+        /* 两栏网格 */
+        .grid {
+            display: grid;
+            grid-template-columns: 1.3fr 1fr;
+            gap: 18px;
+            align-items: start;
+        }
+        .col-right { display: flex; flex-direction: column; gap: 18px; }
+        /* 进入酒馆按钮按自身高度，不随列拉伸（base button 有 flex:1） */
+        .col-right > .btn-enter { flex: 0 0 auto; }
+
+        /* 卡片 */
+        .card {
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 14px;
+            padding: 18px 18px 16px;
+        }
+        .card-title {
+            font-size: 15px; font-weight: 700; color: #d4d9ec;
+            margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+        }
+        /* 卡片内部更紧凑 */
+        .card .config-section { margin-bottom: 12px; padding: 13px 14px; }
+        .card .config-section:last-of-type { margin-bottom: 12px; }
+        .card .section-title { font-size: 13px; margin: 14px 0 8px; color: #9aa1bb; }
+        .card .btn-group { margin-bottom: 0; }
+        .card .btn-enter { margin: 0; }
+
+        /* 窄屏（手机/小窗）回退为单栏 */
+        @media (max-width: 760px) {
+            .container { padding: 24px 20px; }
+            .topbar { flex-direction: column; align-items: stretch; gap: 14px; }
+            .topbar-right { align-items: stretch; }
+            .topbar-right .user-info { width: 100%; }
+            .topbar-left h1 { text-align: center; }
+            .topbar-left .logo, .topbar-left .subtitle { text-align: center; }
+            .grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        ${brand}
-        <h1>数据管理中心</h1>
-        <p class="subtitle">备份和恢复您的 SillyTavern 数据</p>
-
-        <div class="user-info" id="userInfo">
-            <div><span class="label">当前用户：</span><span class="value" id="userName">加载中...</span></div>
-            <div><span class="label">登录账号：</span><span class="value" id="userHandle">加载中...</span></div>
+        <!-- 顶部栏：标题 + 用户信息/退出 -->
+        <div class="topbar">
+            <div class="topbar-left">
+                ${brand}
+                <h1>数据管理中心</h1>
+                <p class="subtitle">备份和恢复您的 SillyTavern 数据</p>
+            </div>
+            <div class="topbar-right">
+                <div class="user-info" id="userInfo">
+                    <div><span class="label">当前用户：</span><span class="value" id="userName">加载中...</span></div>
+                    <div><span class="label">登录账号：</span><span class="value" id="userHandle">加载中...</span></div>
+                </div>
+                <div class="topbar-actions">
+                    <button class="btn-link btn-reset" id="resetEverythingBtn" style="font-size:12px;padding:5px 10px;background:rgba(239,68,68,0.12);color:#fca5a5;border:1px solid rgba(239,68,68,0.25);border-radius:6px;cursor:pointer;">重置一切</button>
+                    <a id="logoutLink">退出登录</a>
+                </div>
+            </div>
         </div>
 
+        <!-- 消息 / 进度（全宽，操作时显示） -->
         <div class="message" id="message"></div>
-
         <div class="progress-container" id="progressContainer">
             <div class="progress-bar">
                 <div class="progress-fill" id="progressFill"></div>
@@ -2441,97 +2518,125 @@ function buildDashboardPage() {
             <div class="progress-text" id="progressText">准备中...</div>
         </div>
 
-        <div class="section">
-            <div class="section-title">备份平台选择</div>
-            <div class="config-section">
-                <label for="backupPlatform">选择备份平台</label>
-                <select id="backupPlatform">
-                    <option value="modelscope">魔搭社区 (ModelScope)</option>
-                    <option value="huggingface">Hugging Face</option>
-                </select>
-            </div>
-        </div>
+        <!-- 两栏 -->
+        <div class="grid">
+            <!-- 左栏：云端备份与恢复 -->
+            <div class="card">
+                <div class="card-title">☁️ 云端备份与恢复</div>
 
-        <div class="section" id="gitInfoConfig" style="display:none;">
-            <div class="section-title">Git 提交信息</div>
-            <div class="config-section">
-                <label for="gitUserName">Git 用户名</label>
-                <input type="text" id="gitUserName" placeholder="例如：YourName">
-                <div class="hint">用于 Git 提交记录</div>
-            </div>
-            <div class="config-section">
-                <label for="gitUserEmail">Git 邮箱</label>
-                <input type="email" id="gitUserEmail" placeholder="例如：your@email.com">
-                <div class="hint">用于 Git 提交记录，Hugging Face 可能需要真实邮箱</div>
-            </div>
-        </div>
+                <div class="config-section">
+                    <label for="backupPlatform">选择备份平台</label>
+                    <select id="backupPlatform">
+                        <option value="modelscope">魔搭社区 (ModelScope)</option>
+                        <option value="huggingface">Hugging Face</option>
+                        <option value="webdav">WebDAV（NAS / 自建云盘）</option>
+                    </select>
+                    <button class="btn-secondary" id="testConnBtn" style="width:100%;margin-top:10px;">
+                        <span class="spinner" id="testConnSpinner"></span>
+                        🔍 测试连接
+                    </button>
+                    <div class="hint" id="testConnResult" style="margin-top:8px;"></div>
+                </div>
 
-        <div class="section" id="modelScopeConfig">
-            <div class="section-title">魔搭社区配置</div>
-            <div class="config-section">
-                <label for="modelScopeToken">ModelScope Access Token</label>
-                <input type="password" id="modelScopeToken" placeholder="输入您的魔搭社区 Access Token">
-                <div class="hint">在 <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" style="color:#b9a3ff;">魔搭社区</a> 获取 Token</div>
-            </div>
-            <div class="config-section">
-                <label for="modelScopeDataset">数据集名称</label>
-                <input type="text" id="modelScopeDataset" placeholder="例如：username/st-backup">
-                <div class="hint">格式：用户名/数据集名称</div>
-            </div>
-        </div>
+                <div id="gitInfoConfig" style="display:none;">
+                    <div class="section-title">Git 提交信息</div>
+                    <div class="config-section">
+                        <label for="gitUserName">Git 用户名</label>
+                        <input type="text" id="gitUserName" placeholder="例如：YourName">
+                        <div class="hint">用于 Git 提交记录</div>
+                    </div>
+                    <div class="config-section">
+                        <label for="gitUserEmail">Git 邮箱</label>
+                        <input type="email" id="gitUserEmail" placeholder="例如：your@email.com">
+                        <div class="hint">用于 Git 提交记录，Hugging Face 可能需要真实邮箱</div>
+                    </div>
+                </div>
 
-        <div class="section" id="huggingFaceConfig" style="display:none;">
-            <div class="section-title">Hugging Face 配置</div>
-            <div class="config-section">
-                <label for="huggingFaceToken">Hugging Face Access Token</label>
-                <input type="password" id="huggingFaceToken" placeholder="输入您的 Hugging Face Access Token">
-                <div class="hint">在 <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#b9a3ff;">Hugging Face</a> 获取 Token（需要 write 权限）</div>
-            </div>
-            <div class="config-section">
-                <label for="huggingFaceDataset">数据集名称</label>
-                <input type="text" id="huggingFaceDataset" placeholder="例如：username/st-backup">
-                <div class="hint">格式：用户名/数据集名称</div>
-            </div>
-        </div>
+                <div id="modelScopeConfig">
+                    <div class="section-title">魔搭社区配置</div>
+                    <div class="config-section">
+                        <label for="modelScopeToken">ModelScope Access Token</label>
+                        <input type="password" id="modelScopeToken" placeholder="输入您的魔搭社区 Access Token">
+                        <div class="hint">在 <a href="https://modelscope.cn/my/myaccesstoken" target="_blank" style="color:#b9a3ff;">魔搭社区</a> 获取 Token</div>
+                    </div>
+                    <div class="config-section">
+                        <label for="modelScopeDataset">数据集名称</label>
+                        <input type="text" id="modelScopeDataset" placeholder="例如：username/st-backup">
+                        <div class="hint">格式：用户名/数据集名称</div>
+                    </div>
+                </div>
 
-        <div class="section">
-            <div class="section-title">数据操作</div>
-            <div class="btn-group">
-                <button class="btn-secondary" id="backupBtn">
-                    <span class="spinner" id="backupSpinner"></span>
-                    备份数据
+                <div id="huggingFaceConfig" style="display:none;">
+                    <div class="section-title">Hugging Face 配置</div>
+                    <div class="config-section">
+                        <label for="huggingFaceToken">Hugging Face Access Token</label>
+                        <input type="password" id="huggingFaceToken" placeholder="输入您的 Hugging Face Access Token">
+                        <div class="hint">在 <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:#b9a3ff;">Hugging Face</a> 获取 Token（需要 write 权限）</div>
+                    </div>
+                    <div class="config-section">
+                        <label for="huggingFaceDataset">数据集名称</label>
+                        <input type="text" id="huggingFaceDataset" placeholder="例如：username/st-backup">
+                        <div class="hint">格式：用户名/数据集名称</div>
+                    </div>
+                </div>
+
+                <div id="webdavConfig" style="display:none;">
+                    <div class="section-title">WebDAV 配置</div>
+                    <div class="config-section">
+                        <label for="webdavUrl">WebDAV 服务器地址</label>
+                        <input type="text" id="webdavUrl" placeholder="例如：https://dav.example.com/backups 或 http://192.168.1.1:8080/dav">
+                        <div class="hint">WebDAV 服务器的完整 URL（不含文件名）</div>
+                    </div>
+                    <div class="config-section">
+                        <label for="webdavUsername">用户名</label>
+                        <input type="text" id="webdavUsername" placeholder="WebDAV 登录用户名">
+                    </div>
+                    <div class="config-section">
+                        <label for="webdavPassword">密码</label>
+                        <input type="password" id="webdavPassword" placeholder="WebDAV 登录密码">
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <label for="restoreFileName">恢复文件名（可选）</label>
+                    <input type="text" id="restoreFileName" placeholder="留空 = 恢复自己的备份">
+                    <div class="hint">恢复别的账号/别处备份过来的文件时填写，例如：backup-小明.zip。仅恢复时生效，备份不受影响。</div>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn-secondary" id="backupBtn">
+                        <span class="spinner" id="backupSpinner"></span>
+                        备份数据
+                    </button>
+                    <button class="btn-primary" id="restoreBtn">
+                        <span class="spinner" id="restoreSpinner"></span>
+                        恢复数据
+                    </button>
+                </div>
+            </div>
+
+            <!-- 右栏：进入酒馆 + 本地备份 -->
+            <div class="col-right">
+                <button class="btn-enter" id="enterBtn">
+                    🏰 进入酒馆
                 </button>
-                <button class="btn-primary" id="restoreBtn">
-                    <span class="spinner" id="restoreSpinner"></span>
-                    恢复数据
-                </button>
+
+                <div class="card">
+                    <div class="card-title">📁 本地备份</div>
+                    <div class="config-section">
+                        <label for="localBackupFile">上传本地备份文件</label>
+                        <input type="file" id="localBackupFile" accept=".zip" style="display:none;">
+                        <button class="btn-secondary" id="uploadBackupBtn" style="width:100%;margin-bottom:12px;">
+                            📁 选择备份文件
+                        </button>
+                        <div class="hint" id="uploadHint">支持 .zip 格式的备份文件</div>
+                        <button class="btn-primary" id="restoreLocalBtn" style="width:100%;display:none;margin-top:12px;">
+                            <span class="spinner" id="restoreLocalSpinner"></span>
+                            恢复本地备份
+                        </button>
+                    </div>
+                </div>
             </div>
-        </div>
-
-        <div class="section">
-            <div class="section-title">本地备份管理</div>
-            <div class="config-section">
-                <label for="localBackupFile">上传本地备份文件</label>
-                <input type="file" id="localBackupFile" accept=".zip" style="display:none;">
-                <button class="btn-secondary" id="uploadBackupBtn" style="width:100%;margin-bottom:12px;">
-                    📁 选择备份文件
-                </button>
-                <div class="hint" id="uploadHint">支持 .zip 格式的备份文件</div>
-                <button class="btn-primary" id="restoreLocalBtn" style="width:100%;display:none;">
-                    <span class="spinner" id="restoreLocalSpinner"></span>
-                    恢复本地备份
-                </button>
-            </div>
-        </div>
-
-        <div class="section">
-            <button class="btn-enter" id="enterBtn">
-                🏰 进入酒馆
-            </button>
-        </div>
-
-        <div class="logout-link">
-            <a id="logoutLink">退出登录</a>
         </div>
     </div>
 
@@ -2563,6 +2668,14 @@ function buildDashboardPage() {
         const huggingFaceDatasetInput = document.getElementById('huggingFaceDataset');
         const gitUserNameInput = document.getElementById('gitUserName');
         const gitUserEmailInput = document.getElementById('gitUserEmail');
+        const webdavConfig = document.getElementById('webdavConfig');
+        const webdavUrlInput = document.getElementById('webdavUrl');
+        const webdavUsernameInput = document.getElementById('webdavUsername');
+        const webdavPasswordInput = document.getElementById('webdavPassword');
+        const testConnBtn = document.getElementById('testConnBtn');
+        const testConnSpinner = document.getElementById('testConnSpinner');
+        const testConnResult = document.getElementById('testConnResult');
+        const restoreFileNameInput = document.getElementById('restoreFileName');
         const progressContainer = document.getElementById('progressContainer');
         const progressFill = document.getElementById('progressFill');
         const progressText = document.getElementById('progressText');
@@ -2674,6 +2787,9 @@ function buildDashboardPage() {
             if (cfg.huggingFaceDataset) huggingFaceDatasetInput.value = cfg.huggingFaceDataset;
             if (cfg.gitUserName) gitUserNameInput.value = cfg.gitUserName;
             if (cfg.gitUserEmail) gitUserEmailInput.value = cfg.gitUserEmail;
+            if (cfg.webdavUrl) webdavUrlInput.value = cfg.webdavUrl;
+            if (cfg.webdavUsername) webdavUsernameInput.value = cfg.webdavUsername;
+            if (cfg.webdavPassword) webdavPasswordInput.value = cfg.webdavPassword;
             switchPlatform(); // 按 platform 显示对应配置区
         }
 
@@ -2693,11 +2809,18 @@ function buildDashboardPage() {
             if (platform === 'modelscope') {
                 modelScopeConfig.style.display = 'block';
                 huggingFaceConfig.style.display = 'none';
+                webdavConfig.style.display = 'none';
                 gitInfoConfig.style.display = 'none';
             } else if (platform === 'huggingface') {
                 modelScopeConfig.style.display = 'none';
                 huggingFaceConfig.style.display = 'block';
+                webdavConfig.style.display = 'none';
                 gitInfoConfig.style.display = 'block';
+            } else if (platform === 'webdav') {
+                modelScopeConfig.style.display = 'none';
+                huggingFaceConfig.style.display = 'none';
+                webdavConfig.style.display = 'block';
+                gitInfoConfig.style.display = 'none';
             }
         }
 
@@ -2711,6 +2834,9 @@ function buildDashboardPage() {
                 huggingFaceDataset: huggingFaceDatasetInput.value.trim(),
                 gitUserName: gitUserNameInput.value.trim(),
                 gitUserEmail: gitUserEmailInput.value.trim(),
+                webdavUrl: webdavUrlInput.value.trim(),
+                webdavUsername: webdavUsernameInput.value.trim(),
+                webdavPassword: webdavPasswordInput.value,
             };
         }
 
@@ -2732,9 +2858,52 @@ function buildDashboardPage() {
 
         // 任一配置项变化即防抖保存到服务器
         [modelScopeTokenInput, modelScopeDatasetInput, huggingFaceTokenInput,
-         huggingFaceDatasetInput, gitUserNameInput, gitUserEmailInput].forEach((el) => {
+         huggingFaceDatasetInput, gitUserNameInput, gitUserEmailInput,
+         webdavUrlInput, webdavUsernameInput, webdavPasswordInput].forEach((el) => {
             el.addEventListener('input', saveBackupConfig);
             el.addEventListener('blur', saveBackupConfig);
+        });
+
+        // 测试连接
+        testConnBtn.addEventListener('click', async () => {
+            const platform = platformSelect.value;
+            const payload = { platform };
+            if (platform === 'modelscope') {
+                payload.token = modelScopeTokenInput.value.trim();
+                payload.dataset = modelScopeDatasetInput.value.trim();
+            } else if (platform === 'huggingface') {
+                payload.token = huggingFaceTokenInput.value.trim();
+                payload.dataset = huggingFaceDatasetInput.value.trim();
+            } else if (platform === 'webdav') {
+                payload.webdavUrl = webdavUrlInput.value.trim();
+                payload.webdavUsername = webdavUsernameInput.value.trim();
+                payload.webdavPassword = webdavPasswordInput.value;
+            }
+            testConnResult.textContent = '';
+            testConnResult.style.color = '';
+            testConnBtn.disabled = true;
+            testConnSpinner.style.display = 'inline-block';
+            try {
+                const r = await fetch('/api/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json().catch(() => ({}));
+                if (d && d.ok) {
+                    testConnResult.textContent = '✅ ' + (d.message || '连接成功');
+                    testConnResult.style.color = '#86efac';
+                } else {
+                    testConnResult.textContent = '❌ ' + ((d && d.error) || '连接失败');
+                    testConnResult.style.color = '#fca5a5';
+                }
+            } catch (e) {
+                testConnResult.textContent = '❌ 测试失败：网络错误';
+                testConnResult.style.color = '#fca5a5';
+            } finally {
+                testConnBtn.disabled = false;
+                testConnSpinner.style.display = 'none';
+            }
         });
 
         // 备份数据
@@ -2743,6 +2912,9 @@ function buildDashboardPage() {
             const userHandle = localStorage.getItem('currentUserHandle');
             const gitUserName = gitUserNameInput.value.trim();
             const gitUserEmail = gitUserEmailInput.value.trim();
+            const wUrl = webdavUrlInput ? webdavUrlInput.value.trim() : '';
+            const wUser = webdavUsernameInput ? webdavUsernameInput.value.trim() : '';
+            const wPass = webdavPasswordInput ? webdavPasswordInput.value : '';
 
             let token, dataset;
             if (platform === 'modelscope') {
@@ -2753,9 +2925,16 @@ function buildDashboardPage() {
                 dataset = huggingFaceDatasetInput.value.trim();
             }
 
-            if (!token || !dataset) {
-                showMessage('请先配置 Token 和数据集名称', 'error');
-                return;
+            if (platform === 'webdav') {
+                if (!wUrl || !wUser || !wPass) {
+                    showMessage('请先配置 WebDAV 地址、用户名和密码', 'error');
+                    return;
+                }
+            } else {
+                if (!token || !dataset) {
+                    showMessage('请先配置 Token 和数据集名称', 'error');
+                    return;
+                }
             }
 
             // 只有 Hugging Face 需要 Git 用户信息
@@ -2779,7 +2958,7 @@ function buildDashboardPage() {
                 const response = await fetch('/api/backup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ platform, token, dataset, userHandle, gitUserName, gitUserEmail })
+                    body: JSON.stringify({ platform, token, dataset, userHandle, gitUserName, gitUserEmail, webdavUrl: wUrl, webdavUsername: wUser, webdavPassword: wPass })
                 });
 
                 if (!response.ok) {
@@ -2843,6 +3022,9 @@ function buildDashboardPage() {
         restoreBtn.addEventListener('click', async () => {
             const platform = platformSelect.value;
             const userHandle = localStorage.getItem('currentUserHandle');
+            const wUrl = webdavUrlInput ? webdavUrlInput.value.trim() : '';
+            const wUser = webdavUsernameInput ? webdavUsernameInput.value.trim() : '';
+            const wPass = webdavPasswordInput ? webdavPasswordInput.value : '';
 
             let token, dataset;
             if (platform === 'modelscope') {
@@ -2853,9 +3035,16 @@ function buildDashboardPage() {
                 dataset = huggingFaceDatasetInput.value.trim();
             }
 
-            if (!token || !dataset) {
-                showMessage('请先配置 Token 和数据集名称', 'error');
-                return;
+            if (platform === 'webdav') {
+                if (!wUrl || !wUser || !wPass) {
+                    showMessage('请先配置 WebDAV 地址、用户名和密码', 'error');
+                    return;
+                }
+            } else {
+                if (!token || !dataset) {
+                    showMessage('请先配置 Token 和数据集名称', 'error');
+                    return;
+                }
             }
 
             if (!userHandle) {
@@ -2878,7 +3067,7 @@ function buildDashboardPage() {
                 const response = await fetch('/api/restore', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ platform, token, dataset, userHandle })
+                    body: JSON.stringify({ platform, token, dataset, userHandle, webdavUrl: wUrl, webdavUsername: wUser, webdavPassword: wPass, restoreFileName: restoreFileNameInput ? restoreFileNameInput.value.trim() : '' })
                 });
 
                 if (!response.ok) {
@@ -3053,6 +3242,34 @@ function buildDashboardPage() {
                 restoreBtn.disabled = false;
                 restoreLocalBtn.disabled = false;
                 restoreLocalSpinner.style.display = 'none';
+            }
+        });
+
+        // 重置一切：删除当前用户全部 SillyTavern 数据，恢复到初始状态
+        // （不清除云端备份配置，重置后无需重新填 token/数据集）。
+        document.getElementById('resetEverythingBtn').addEventListener('click', async () => {
+            const confirmed = await customConfirm(
+                '⚠️ 确定要重置一切吗？' + String.fromCharCode(10, 10) +
+                '这将删除您的所有角色、聊天记录、设置、世界书等全部数据，' +
+                '恢复到初始状态。备份配置（token / 数据集）会保留。' + String.fromCharCode(10, 10) +
+                '此操作不可撤销！'
+            );
+            if (!confirmed) return;
+            const btn = document.getElementById('resetEverythingBtn');
+            btn.disabled = true; btn.textContent = '重置中…';
+            try {
+                const r = await fetch('/api/reset-everything', { method: 'POST', credentials: 'include' });
+                if (!r.ok) {
+                    const d = await r.json().catch(() => ({}));
+                    showPersistentMessage((d && d.error) || '重置失败', 'error');
+                    return;
+                }
+                showPersistentMessage('✅ 重置成功！数据已恢复到初始状态。', 'success');
+            } catch (e) {
+                console.error('重置失败:', e);
+                showPersistentMessage('重置失败：网络错误', 'error');
+            } finally {
+                btn.disabled = false; btn.textContent = '重置一切';
             }
         });
 
@@ -3375,7 +3592,160 @@ function getDirectorySize(dirPath) {
     return totalSize;
 }
 
-// 备份当前用户数据到魔搭社区（使用 Git LFS）
+// ─── WebDAV 备份/恢复（HTTP PUT/GET，零 Git 依赖）────────────────────────
+// 对任意 WebDAV 服务器（NAS、NextCloud、ownCloud、InfiniCLOUD、TeraCLOUD 等）
+// 直接上传/下载 zip 文件。使用 HTTP Basic Auth，纯 Node 内置模块实现，无需额外依赖。
+
+function webdavRequest(url, method, body, authHeader, streamCallback, extraHeaders) {
+    const parsed = new URL(url);
+    const isHttps = parsed.protocol === 'https:';
+    const mod = isHttps ? https : http;
+    const auth = typeof authHeader === 'string' ? authHeader :
+        (authHeader ? `Basic ${Buffer.from(`${authHeader.username}:${authHeader.password}`).toString('base64')}` : null);
+
+    return new Promise((resolve, reject) => {
+        const opts = {
+            method,
+            hostname: parsed.hostname,
+            port: parsed.port || (isHttps ? 443 : 80),
+            path: parsed.pathname + parsed.search,
+            headers: {
+                'User-Agent': 'st-register-webdav/1.0',
+                ...(auth ? { Authorization: auth } : {}),
+                ...(body ? { 'Content-Length': Buffer.byteLength(body), 'Content-Type': 'application/zip' } : {}),
+                ...(extraHeaders || {}),
+            },
+            timeout: 600_000, // 10 分钟超时（应对大文件慢速上传）
+        };
+
+        const httpReq = mod.request(opts, (res) => {
+            // 2xx = 成功；3xx = 重定向不跟踪（简单场景下基本不会遇到）
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+                if (streamCallback) {
+                    streamCallback(res, resolve, reject);
+                } else {
+                    // 无回调 = 只需确认成功即可（如 PUT），吞掉响应体
+                    res.resume();
+                    resolve({ status: res.statusCode });
+                }
+            } else if (res.statusCode >= 300 && res.statusCode < 400) {
+                // 跟进一次重定向
+                const loc = res.headers.location;
+                if (loc) {
+                    resolve(webdavRequest(loc, method, body, authHeader, streamCallback));
+                } else {
+                    reject(new Error(`HTTP ${res.statusCode}: 重定向未带 Location 头`));
+                }
+            } else {
+                let msg = '';
+                res.on('data', c => msg += c.toString());
+                res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${msg.slice(0, 500)}`)));
+            }
+        });
+        httpReq.on('timeout', () => { httpReq.destroy(); reject(new Error('请求超时')); });
+        httpReq.on('error', reject);
+        if (body) httpReq.write(body);
+        httpReq.end();
+    });
+}
+
+// 上传 zip 到 WebDAV，带进度回调
+async function webdavUpload(zipPath, filename, url, auth) {
+    const stat = fs.statSync(zipPath);
+    const fileSizeMB = (stat.size / 1024 / 1024).toFixed(2);
+    const targetUrl = url.replace(/\/+$/, '') + '/' + encodeURIComponent(filename);
+    console.log(`[WebDAV] 上传: ${targetUrl} (${fileSizeMB} MB)`);
+    const data = fs.readFileSync(zipPath);
+    await webdavRequest(targetUrl, 'PUT', data, auth);
+    return { size: fileSizeMB };
+}
+
+// 从 WebDAV 下载 zip 到本地路径，带进度回调
+async function webdavDownload(filename, url, auth, destPath) {
+    const targetUrl = url.replace(/\/+$/, '') + '/' + encodeURIComponent(filename);
+    console.log(`[WebDAV] 下载: ${targetUrl}`);
+    const file = fs.createWriteStream(destPath);
+    await webdavRequest(targetUrl, 'GET', null, auth, (res, resolve, reject) => {
+        const total = parseInt(res.headers['content-length'], 10) || 0;
+        let received = 0;
+        res.on('data', c => {
+            received += c.length;
+            file.write(c);
+        });
+        res.on('end', () => {
+            file.end();
+            const sizeMB = (fs.statSync(destPath).size / 1024 / 1024).toFixed(2);
+            console.log(`[WebDAV] 下载完成: ${sizeMB} MB`);
+            resolve({ size: sizeMB });
+        });
+        res.on('error', reject);
+    });
+}
+
+// 测试云端平台配置是否正确（轻量探测，不传输数据）
+// Git 类平台用 `git ls-remote` 验证仓库可访问 + token 有效；
+// WebDAV 用 PROPFIND（深度 0）验证 URL + 用户名 + 密码可访问目录。
+app.post('/api/test-connection', jsonParser, async (req, res) => {
+    try {
+        const { platform, token, dataset, webdavUrl, webdavUsername, webdavPassword } = req.body || {};
+
+        if (!platform) {
+            return res.json({ ok: false, error: '缺少平台参数' });
+        }
+
+        if (platform === 'webdav') {
+            if (!webdavUrl || !webdavUsername || !webdavPassword) {
+                return res.json({ ok: false, error: '请填写 WebDAV 地址、用户名和密码' });
+            }
+            try {
+                // PROPFIND 深度 0：只查目标 URL 本身，验证认证 + 可达性
+                const auth = { username: webdavUsername, password: webdavPassword };
+                const targetUrl = webdavUrl.replace(/\/+$/, '') + '/';
+                await webdavRequest(targetUrl, 'PROPFIND', null, auth, null, { Depth: '0' });
+                return res.json({ ok: true, message: 'WebDAV 连接成功，认证有效。' });
+            } catch (e) {
+                return res.json({ ok: false, error: 'WebDAV 连接失败：' + e.message });
+            }
+        }
+
+        // Git 类平台：modelscope / huggingface
+        if (platform !== 'modelscope' && platform !== 'huggingface') {
+            return res.json({ ok: false, error: '不支持的平台' });
+        }
+        if (!token || !dataset) {
+            return res.json({ ok: false, error: '请填写 Token 和数据集名称' });
+        }
+        const [namespace, datasetName] = String(dataset).split('/');
+        if (!namespace || !datasetName) {
+            return res.json({ ok: false, error: '数据集名称格式错误，应为：用户名/数据集名称' });
+        }
+
+        let repoUrl;
+        if (platform === 'modelscope') {
+            repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+        } else {
+            repoUrl = `https://user:${token}@huggingface.co/datasets/${namespace}/${datasetName}`;
+        }
+
+        try {
+            // ls-remote 只取引用列表，不下载数据；30 秒超时
+            execSync(`git ls-remote "${repoUrl}"`, { stdio: 'pipe', encoding: 'utf8', timeout: 30000 });
+            return res.json({ ok: true, message: '连接成功，仓库可访问且 Token 有效。' });
+        } catch (e) {
+            const stderr = (e.stderr || '').toString();
+            let hint = e.message;
+            if (/Authentication|403|401|denied/i.test(stderr)) hint = 'Token 无效或无权限访问该数据集';
+            else if (/not found|404|Repository not found/i.test(stderr)) hint = '数据集不存在，请先在平台上创建';
+            else if (stderr) hint = stderr.split('\n').slice(0, 3).join(' ');
+            return res.json({ ok: false, error: '连接失败：' + hint });
+        }
+    } catch (err) {
+        console.error('[测试连接] 错误:', err);
+        return res.json({ ok: false, error: '测试失败：' + err.message });
+    }
+});
+
+// 备份当前用户数据到远程平台
 app.post('/api/backup', jsonParser, async (req, res) => {
     // 设置 SSE 响应头，用于实时推送进度
     res.setHeader('Content-Type', 'text/event-stream');
@@ -3407,23 +3777,36 @@ app.post('/api/backup', jsonParser, async (req, res) => {
         }, BACKUP_CONFIG.TIMEOUT_MS);
 
         try {
-            const { platform, token, dataset, userHandle, gitUserName, gitUserEmail } = req.body;
+            const { platform, token, dataset, userHandle, gitUserName, gitUserEmail, webdavUrl, webdavUsername, webdavPassword } = req.body;
 
-            if (!platform || !token || !dataset || !userHandle) {
+            // 通用校验
+            if (!platform || !userHandle) {
                 clearTimeout(timeoutId);
                 return sendComplete(false, '缺少必要参数');
+            }
+
+            // 验证平台
+            if (platform !== 'modelscope' && platform !== 'huggingface' && platform !== 'webdav') {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '不支持的备份平台');
+            }
+
+            // WebDAV 的凭证校验
+            if (platform === 'webdav' && (!webdavUrl || !webdavUsername || !webdavPassword)) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '缺少 WebDAV 配置（URL / 用户名 / 密码）');
+            }
+
+            // Git 类平台需要 dataset
+            if (platform !== 'webdav' && (!token || !dataset)) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '缺少必要参数（Token 或数据集名称）');
             }
 
             // 只有 Hugging Face 需要用户提供 Git 用户信息
             if (platform === 'huggingface' && (!gitUserName || !gitUserEmail)) {
                 clearTimeout(timeoutId);
                 return sendComplete(false, '缺少 Git 用户信息');
-            }
-
-            // 验证平台
-            if (platform !== 'modelscope' && platform !== 'huggingface') {
-                clearTimeout(timeoutId);
-                return sendComplete(false, '不支持的备份平台');
             }
 
             const userDataDir = path.join(DATA_ROOT, userHandle);
@@ -3493,6 +3876,26 @@ app.post('/api/backup', jsonParser, async (req, res) => {
         const fileSize = (fs.statSync(tempZipPath).size / 1024 / 1024).toFixed(2);
         sendProgress(`压缩完成，文件大小：${fileSize} MB`, 25);
 
+        // ── WebDAV 分支：直接 HTTP PUT，无需 Git ──
+        if (platform === 'webdav') {
+            try {
+                const auth = { username: webdavUsername, password: webdavPassword };
+                const backupFileName = `backup-${userHandle}.zip`;
+                sendProgress('正在上传到 WebDAV...', 30);
+                await webdavUpload(tempZipPath, backupFileName, webdavUrl, auth);
+                sendProgress('上传完成，正在清理临时文件...', 95);
+                fs.unlinkSync(tempZipPath);
+                clearTimeout(timeoutId);
+                return sendComplete(true, '备份成功！', { filename: backupFileName, size: fileSize + ' MB' });
+            } catch (webdavErr) {
+                console.error('[WebDAV备份] 错误:', webdavErr.message);
+                if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);
+                clearTimeout(timeoutId);
+                return sendComplete(false, 'WebDAV 备份失败：' + webdavErr.message + '\n请检查 URL、用户名、密码是否正确，以及 WebDAV 服务器是否可访问。');
+            }
+        }
+
+        // ── Git 类分支：魔搭社区 / Hugging Face ──
         // 解析数据集名称
         const [namespace, datasetName] = dataset.split('/');
         if (!namespace || !datasetName) {
@@ -3721,124 +4124,189 @@ app.post('/api/restore', jsonParser, async (req, res) => {
         }, BACKUP_CONFIG.TIMEOUT_MS);
 
         try {
-        const { platform, token, dataset, userHandle } = req.body;
+        const { platform, token, dataset, userHandle, webdavUrl, webdavUsername, webdavPassword, restoreFileName } = req.body;
 
-        if (!platform || !token || !dataset || !userHandle) {
+        if (!platform || !userHandle) {
             clearTimeout(timeoutId);
             return sendComplete(false, '缺少必要参数');
         }
 
         // 验证平台
-        if (platform !== 'modelscope' && platform !== 'huggingface') {
+        if (platform !== 'modelscope' && platform !== 'huggingface' && platform !== 'webdav') {
             clearTimeout(timeoutId);
             return sendComplete(false, '不支持的备份平台');
         }
 
-        const userDataDir = path.join(DATA_ROOT, userHandle);
-
-        // 解析数据集名称
-        const [namespace, datasetName] = dataset.split('/');
-        if (!namespace || !datasetName) {
+        // WebDAV 的凭证校验
+        if (platform === 'webdav' && (!webdavUrl || !webdavUsername || !webdavPassword)) {
             clearTimeout(timeoutId);
-            return sendComplete(false, '数据集名称格式错误，应为：用户名/数据集名称');
+            return sendComplete(false, '缺少 WebDAV 配置（URL / 用户名 / 密码）');
         }
 
-        // 创建临时目录用于 Git 操作
-        sendProgress('正在准备恢复...', 5);
+        // Git 类平台需要 token 和 dataset
+        if (platform !== 'webdav' && (!token || !dataset)) {
+            clearTimeout(timeoutId);
+            return sendComplete(false, '缺少必要参数（Token 或数据集名称）');
+        }
+
         const timestamp = Date.now();
-        const tempGitDir = path.join(getTempDir(), `git-restore-${userHandle}-${timestamp}`);
-        fs.mkdirSync(tempGitDir, { recursive: true });
+        const userDataDir = path.join(DATA_ROOT, userHandle);
+        // 默认恢复自己的备份文件 backup-<handle>.zip；若用户指定了文件名/路径则用指定的，
+        // 以便恢复从别的账号/别处备份过来的文件（避免账号 handle 对不上找不到文件）。
+        // 只取文件名部分（basename）防止路径穿越；用户填 "a/b/backup.zip" 也只用 "backup.zip"。
+        let backupFileName = `backup-${userHandle}.zip`;
+        if (restoreFileName && String(restoreFileName).trim()) {
+            let name = String(restoreFileName).trim().replace(/\\/g, '/');
+            name = name.substring(name.lastIndexOf('/') + 1); // basename
+            if (name) {
+                if (!/\.zip$/i.test(name)) name += '.zip'; // 自动补 .zip 后缀
+                backupFileName = name;
+            }
+        }
 
-        try {
-            // 根据平台构建仓库 URL
-            let repoUrl;
-            const platformName = platform === 'modelscope' ? '魔搭社区' : 'Hugging Face';
-            if (platform === 'modelscope') {
-                repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
-            } else if (platform === 'huggingface') {
-                repoUrl = `https://user:${token}@huggingface.co/datasets/${namespace}/${datasetName}`;
+        // ── WebDAV 分支：直接 HTTP GET 下载 zip，无需 Git ──
+        let backupFilePath;     // 解压前 zip 文件所在路径
+        let fileSize = '';     // "XX MB"
+        let tempCleanupDir;    // 用完后需清理的临时目录（WebDAV 用它，Git 用 tempGitDir）
+        let fileSizeRaw = 0;   // 字节
+
+        if (platform === 'webdav') {
+            try {
+                const auth = { username: webdavUsername, password: webdavPassword };
+                const tempDir = path.join(getTempDir(), `webdav-restore-${userHandle}-${timestamp}`);
+                fs.mkdirSync(tempDir, { recursive: true });
+                tempCleanupDir = tempDir;
+                backupFilePath = path.join(tempDir, backupFileName);
+
+                // 先探测文件是否存在（HEAD 请求）
+                sendProgress('正在连接 WebDAV 服务器...', 5);
+                try {
+                    const targetUrl = webdavUrl.replace(/\/+$/, '') + '/' + encodeURIComponent(backupFileName);
+                    await webdavRequest(targetUrl, 'HEAD', null, auth);
+                } catch (headErr) {
+                    fs.rmSync(tempDir, { recursive: true, force: true });
+                    clearTimeout(timeoutId);
+                    return sendComplete(false, 'WebDAV 连接失败或文件不存在：' + headErr.message);
+                }
+
+                sendProgress('正在从 WebDAV 下载备份文件...（可能需要几分钟）', 10);
+                const result = await webdavDownload(backupFileName, webdavUrl, auth, backupFilePath);
+                fileSize = result.size + ' MB';
+                fileSizeRaw = fs.statSync(backupFilePath).size;
+                sendProgress(`下载完成，文件大小：${fileSize}`, 60);
+            } catch (webdavErr) {
+                console.error('[WebDAV恢复] 错误:', webdavErr.message);
+                if (tempCleanupDir && fs.existsSync(tempCleanupDir)) {
+                    fs.rmSync(tempCleanupDir, { recursive: true, force: true });
+                }
+                clearTimeout(timeoutId);
+                return sendComplete(false, 'WebDAV 恢复失败：' + webdavErr.message + '\n请检查 URL、用户名、密码和备份文件是否存在。');
+            }
+        } else {
+            // ── Git 类分支：魔搭社区 / Hugging Face ──
+            // 解析数据集名称
+            const [namespace, datasetName] = dataset.split('/');
+            if (!namespace || !datasetName) {
+                clearTimeout(timeoutId);
+                return sendComplete(false, '数据集名称格式错误，应为：用户名/数据集名称');
             }
 
-            sendProgress(`正在连接${platformName}...`, 10);
+            // 创建临时目录用于 Git 操作
+            sendProgress('正在准备恢复...', 5);
+            const tempGitDir = path.join(getTempDir(), `git-restore-${userHandle}-${timestamp}`);
+            fs.mkdirSync(tempGitDir, { recursive: true });
+            tempCleanupDir = tempGitDir;
 
             try {
-                execSync(`git clone "${repoUrl}" "${tempGitDir}"`, {
-                    stdio: 'pipe',
-                    encoding: 'utf8'
-                });
-                sendProgress('克隆完成', 30);
-            } catch (cloneErr) {
-                console.error('[恢复] 克隆失败:', cloneErr.message);
-                throw new Error('克隆仓库失败：' + cloneErr.message);
-            }
+                // 根据平台构建仓库 URL
+                let repoUrl;
+                const platformName = platform === 'modelscope' ? '魔搭社区' : 'Hugging Face';
+                if (platform === 'modelscope') {
+                    repoUrl = `https://oauth2:${token}@www.modelscope.cn/datasets/${namespace}/${datasetName}.git`;
+                } else if (platform === 'huggingface') {
+                    repoUrl = `https://user:${token}@huggingface.co/datasets/${namespace}/${datasetName}`;
+                }
 
-            // 配置 Git LFS
-            sendProgress('正在配置 Git LFS...', 35);
-            try {
-                execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
-            } catch (lfsErr) {
-                console.error('[恢复] Git LFS 安装失败:', lfsErr.message);
-                throw new Error('Git LFS 未安装或配置失败');
-            }
+                sendProgress(`正在连接${platformName}...`, 10);
 
-            // 拉取 LFS 文件
-            sendProgress('正在下载备份文件...（可能需要较长时间）', 40);
+                try {
+                    execSync(`git clone "${repoUrl}" "${tempGitDir}"`, {
+                        stdio: 'pipe',
+                        encoding: 'utf8'
+                    });
+                    sendProgress('克隆完成', 30);
+                } catch (cloneErr) {
+                    console.error('[恢复] 克隆失败:', cloneErr.message);
+                    throw new Error('克隆仓库失败：' + cloneErr.message);
+                }
 
-            // 使用 spawn 来实时捕获 git lfs pull 输出
-            await new Promise((resolve, reject) => {
-                const gitLfsPull = spawn('git', ['lfs', 'pull'], {
-                    cwd: tempGitDir,
-                    stdio: ['ignore', 'pipe', 'pipe']
-                });
+                // 配置 Git LFS
+                sendProgress('正在配置 Git LFS...', 35);
+                try {
+                    execSync('git lfs install', { cwd: tempGitDir, stdio: 'pipe' });
+                } catch (lfsErr) {
+                    console.error('[恢复] Git LFS 安装失败:', lfsErr.message);
+                    throw new Error('Git LFS 未安装或配置失败');
+                }
 
-                let lastProgress = 40;
+                // 拉取 LFS 文件
+                sendProgress('正在下载备份文件...（可能需要较长时间）', 40);
 
-                gitLfsPull.stderr.on('data', (data) => {
-                    const output = data.toString();
+                // 使用 spawn 来实时捕获 git lfs pull 输出
+                await new Promise((resolve, reject) => {
+                    const gitLfsPull = spawn('git', ['lfs', 'pull'], {
+                        cwd: tempGitDir,
+                        stdio: ['ignore', 'pipe', 'pipe']
+                    });
 
-                    // 解析 Git LFS 下载进度
-                    const progressMatch = output.match(/(\d+)%/);
-                    if (progressMatch) {
-                        const percent = parseInt(progressMatch[1]);
-                        // 将 0-100% 映射到 40-60%
-                        const mappedProgress = 40 + Math.floor(percent * 0.20);
-                        if (mappedProgress > lastProgress) {
-                            lastProgress = mappedProgress;
-                            sendProgress(`正在下载备份文件... ${percent}%`, mappedProgress);
+                    let lastProgress = 40;
+
+                    gitLfsPull.stderr.on('data', (data) => {
+                        const output = data.toString();
+
+                        // 解析 Git LFS 下载进度
+                        const progressMatch = output.match(/(\d+)%/);
+                        if (progressMatch) {
+                            const percent = parseInt(progressMatch[1]);
+                            // 将 0-100% 映射到 40-60%
+                            const mappedProgress = 40 + Math.floor(percent * 0.20);
+                            if (mappedProgress > lastProgress) {
+                                lastProgress = mappedProgress;
+                                sendProgress(`正在下载备份文件... ${percent}%`, mappedProgress);
+                            }
                         }
-                    }
+                    });
+
+                    gitLfsPull.on('close', (code) => {
+                        if (code === 0) {
+                            resolve();
+                        } else {
+                            reject(new Error(`git lfs pull 失败，退出码: ${code}`));
+                        }
+                    });
+
+                    gitLfsPull.on('error', (err) => {
+                        console.error('[恢复] git lfs pull 进程错误:', err);
+                        reject(err);
+                    });
                 });
 
-                gitLfsPull.on('close', (code) => {
-                    if (code === 0) {
-                        resolve();
-                    } else {
-                        reject(new Error(`git lfs pull 失败，退出码: ${code}`));
-                    }
-                });
+                sendProgress('下载完成', 60);
 
-                gitLfsPull.on('error', (err) => {
-                    console.error('[恢复] git lfs pull 进程错误:', err);
-                    reject(err);
-                });
-            });
+                // 查找备份文件
+                backupFilePath = path.join(tempGitDir, backupFileName);
+                console.log(`[恢复] 查找备份文件: ${backupFileName}`);
 
-            sendProgress('下载完成', 60);
+                if (!fs.existsSync(backupFilePath)) {
+                    console.error(`[恢复] 未找到备份文件: ${backupFilePath}`);
+                    fs.rmSync(tempGitDir, { recursive: true, force: true });
+                    return sendComplete(false, `未找到备份文件: ${backupFileName}`);
+                }
 
-            // 查找备份文件
-            const backupFileName = `backup-${userHandle}.zip`;
-            const backupFilePath = path.join(tempGitDir, backupFileName);
-            console.log(`[恢复] 查找备份文件: ${backupFileName}`);
-
-            if (!fs.existsSync(backupFilePath)) {
-                console.error(`[恢复] 未找到备份文件: ${backupFilePath}`);
-                fs.rmSync(tempGitDir, { recursive: true, force: true });
-                return sendComplete(false, `未找到备份文件: ${backupFileName}`);
-            }
-
-            const fileSize = (fs.statSync(backupFilePath).size / 1024 / 1024).toFixed(2);
-            sendProgress(`找到备份文件，大小：${fileSize} MB`, 65);
-            console.log(`[恢复] 找到备份文件: ${backupFileName} (${fileSize} MB)`);
+                fileSizeRaw = fs.statSync(backupFilePath).size;
+                fileSize = (fileSizeRaw / 1024 / 1024).toFixed(2);
+                sendProgress(`找到备份文件，大小：${fileSize} MB`, 65);
+                console.log(`[恢复] 找到备份文件: ${backupFileName} (${fileSize} MB)`);
 
             // 备份当前数据（以防恢复失败）
             sendProgress('正在备份当前数据...', 70);
@@ -3871,7 +4339,9 @@ app.post('/api/restore', jsonParser, async (req, res) => {
 
                 // 清理临时文件
                 console.log('[恢复] 清理临时文件...');
-                fs.rmSync(tempGitDir, { recursive: true, force: true });
+                if (tempCleanupDir && fs.existsSync(tempCleanupDir)) {
+                    fs.rmSync(tempCleanupDir, { recursive: true, force: true });
+                }
                 if (fs.existsSync(backupDir)) {
                     fs.rmSync(backupDir, { recursive: true, force: true });
                 }
@@ -3894,21 +4364,24 @@ app.post('/api/restore', jsonParser, async (req, res) => {
                     fs.cpSync(backupDir, userDataDir, { recursive: true });
                     fs.rmSync(backupDir, { recursive: true, force: true });
                 }
-                if (fs.existsSync(tempGitDir)) {
-                    fs.rmSync(tempGitDir, { recursive: true, force: true });
+                if (tempCleanupDir && fs.existsSync(tempCleanupDir)) {
+                    fs.rmSync(tempCleanupDir, { recursive: true, force: true });
                 }
                 throw extractErr;
             }
 
-        } catch (gitErr) {
-            console.error('[恢复] Git 操作失败:', gitErr.message);
+            } catch (gitErr) {
+                console.error('[恢复] Git 操作失败:', gitErr.message);
 
-            // 清理临时文件
-            if (fs.existsSync(tempGitDir)) fs.rmSync(tempGitDir, { recursive: true, force: true });
+                // 清理临时文件
+                if (tempCleanupDir && fs.existsSync(tempCleanupDir)) {
+                    fs.rmSync(tempCleanupDir, { recursive: true, force: true });
+                }
 
-            clearTimeout(timeoutId);
-            sendComplete(false, 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有读取权限。');
-        }
+                clearTimeout(timeoutId);
+                sendComplete(false, 'Git 操作失败：' + gitErr.message + '。请确保已安装 Git 和 Git LFS，且数据集存在并有读取权限。');
+            }
+            } // else (Git flow)
 
         } catch (err) {
             console.error('[恢复] 错误:', err);
@@ -4263,6 +4736,51 @@ app.post('/api/logout', (req, res) => {
     return res.json({ ok: true });
 });
 
+// 重置一切：删除当前用户在 SillyTavern 的全部数据，恢复到初始状态。
+// 等价于 SillyTavern 账号设置里的「Reset Everything」，但按需求免去输入当前密码与重置码：
+// 直接从 session cookie 解出 handle（已登录即可），删掉其数据根目录后重建目录并写入默认内容。
+// 为体贴用户，会保留云端备份配置（token/数据集），重置后无需重新填写。
+app.post('/api/reset-everything', async (req, res) => {
+    try {
+        const handle = currentHandle(req);
+        if (!handle) return res.status(401).json({ error: '未登录' });
+        const user = await storage.getItem(toKey(handle));
+        if (!user) return res.status(404).json({ error: '用户不存在' });
+
+        const userRoot = getUserDirectories(handle).root;
+
+        // 先把云端备份配置读出来，重置后再写回（避免用户重新配置 token/数据集）。
+        let savedBackupCfg = null;
+        const cfgFile = backupConfigPathFor(handle);
+        try {
+            if (fs.existsSync(cfgFile)) savedBackupCfg = fs.readFileSync(cfgFile, 'utf8');
+        } catch { /* 读不到就算了 */ }
+
+        // 删除该用户整个数据目录（角色、聊天、设置、世界书等全部清空）。
+        fs.rmSync(userRoot, { recursive: true, force: true });
+
+        // 重建目录结构并写入默认内容（settings、默认角色、主题、预设等），让酒馆能正常启动。
+        createUserDirectories(handle);
+        seedDefaultContent(handle);
+
+        // 还原云端备份配置。
+        if (savedBackupCfg !== null) {
+            try {
+                fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
+                fs.writeFileSync(cfgFile, savedBackupCfg, 'utf8');
+            } catch (e) {
+                console.warn('[重置] 还原备份配置失败（可忽略）:', e.message);
+            }
+        }
+
+        console.log('[重置] 已重置用户数据:', handle);
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error('[重置] 失败:', err);
+        return res.status(500).json({ error: '重置失败: ' + err.message });
+    }
+});
+
 // ─── 备份配置（按用户存到其数据目录，换设备/恢复后免重配）──────────────────────
 // 存储位置：DATA_ROOT/<handle>/user/backup-config.json。放在 user/ 子目录下，会随
 // 整包备份一起打包，恢复到新机器后配置自动还原。这里解出登录 handle，校验后读写该文件。
@@ -4286,6 +4804,7 @@ function backupConfigPathFor(handle) {
 const BACKUP_CONFIG_KEYS = [
     'platform', 'modelScopeToken', 'modelScopeDataset',
     'huggingFaceToken', 'huggingFaceDataset', 'gitUserName', 'gitUserEmail',
+    'webdavUrl', 'webdavUsername', 'webdavPassword',
 ];
 
 // 读取当前用户的备份配置
