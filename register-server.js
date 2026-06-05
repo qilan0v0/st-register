@@ -1601,7 +1601,7 @@ ${MODERN_OVERRIDES}
                 }
 
                 // 登录成功，cookie 已设置，跳转到数据管理页面。
-                window.location.href = '/dashboard';
+                window.location.href = '/st';
             } catch (err) {
                 showError('网络错误，请稍后重试。');
             } finally {
@@ -1882,7 +1882,7 @@ const AUTH_SCRIPT = `
         if (res.status===429 && !raw) raw='Too many attempts. Try again later or recover your password.';
         lShowErr(translateError(raw)); return;
       }
-      window.location.href = '/dashboard';
+      window.location.href = '/st';
     } catch(err){ lShowErr('网络错误，请稍后重试。'); }
     finally { btn.disabled = false; sp.style.display = 'none'; }
   });
@@ -3095,18 +3095,18 @@ function requireAuth(req, res, next) {
     next();
 }
 
-// 已登录则重定向到 dashboard（轻量：本地解码 session cookie，仅真正登录才跳转）
+// 已登录则重定向到数据管理页 /st（轻量：本地解码 session cookie，仅真正登录才跳转）
 function redirectIfAuth(req, res, next) {
     if (isLoggedIn(req)) {
-        return res.redirect('/dashboard');
+        return res.redirect('/st');
     }
     next();
 }
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
-// Dashboard 页面（登录后的数据管理中心）
-app.get('/dashboard', requireAuth, (_req, res) => {
+// 数据管理页（登录后的中心页，路径 /st）
+app.get('/st', requireAuth, (_req, res) => {
     res.type('html').send(buildDashboardPage());
 });
 
@@ -4250,7 +4250,7 @@ app.get('/api/current-user', async (req, res) => {
 // SillyTavern 用 cookie-session（整个会话就存在 cookie 里，服务端无会话存储），所以
 // 把浏览器里的 session cookie 及其签名 cookie(.sig) 过期，就等于彻底登出 —— 无需把
 // POST /api/users/logout 代理给 SillyTavern（公网部署下那条请求会因白名单/CSRF 被拒，
-// 导致 cookie 没被清除，跳回 /login 又被 isLoggedIn 判为已登录而弹回 /dashboard）。
+// 导致 cookie 没被清除，跳回 /login 又被 isLoggedIn 判为已登录而弹回 /st）。
 app.post('/api/logout', (req, res) => {
     // 用与 SillyTavern 完全一致的属性把两个 cookie 立刻过期。
     // SillyTavern cookie-session 配置：sameSite=lax, httpOnly, path=/。
@@ -4359,7 +4359,7 @@ app.use('/csrf-token', (req, res) => {
 // SillyTavern 本地的 config.yaml），所以这里能算出与 SillyTavern 完全一致的当前 cookie 名。
 // 关键：必须只认这个「当前名字」的 cookie，绝不能用宽松正则匹配任意 session-xxxxxxxx ——
 // 否则浏览器里残留的「旧主机名/旧部署」遗留 cookie（仍带着 handle）会被误判为已登录，导致
-// /login 一直跳 /dashboard，而 SillyTavern 用的是另一个当前名字的匿名 cookie，于是把 /
+// /login 一直跳 /st，而 SillyTavern 用的是另一个当前名字的匿名 cookie，于是把 /
 // 又跳回 /login，形成死循环（本机干净所以本地不复现，公网/容器换过主机名就中招）。
 const ST_SESSION_COOKIE_NAME = (() => {
     const hostname = os.hostname() || 'localhost';
@@ -4399,7 +4399,7 @@ function getSTSession(req) {
 
 // 是否「真正登录」：session 里带有非空的用户 handle（SillyTavern 登录后才会写入）。
 // 仅有匿名会话（只含 csrfToken、没有 handle）不算登录 —— 修复「打开登录页就被当成
-// 已登录而跳转 /dashboard，结果加载不出用户信息」的问题。
+// 已登录而跳转 /st，结果加载不出用户信息」的问题。
 function isLoggedIn(req) {
     const sess = getSTSession(req);
     return !!(sess && typeof sess.handle === 'string' && sess.handle.length > 0);
@@ -4422,26 +4422,75 @@ app.use((req, res, next) => {
     }
 });
 
-// 兜底：其他所有未匹配的路径也代理到 SillyTavern（用于静态资源）
-// 这样 /lib/*, /scripts/*, /css/* 等资源都能正确加载
+// 兜底：区分「SillyTavern 的资源/接口请求」与「用户输错地址的顶层导航」。
+// - SillyTavern 的 JS 会用 fetch/xhr 请求 /thumbnail、/version 等动态路径（非文档请求），
+//   这些必须代理给 SillyTavern；
+// - 用户在地址栏打开一个不存在的路径（顶层文档导航）则返回 Not Found，绝不再代理或跳转 ——
+//   因为 SillyTavern 是单页应用，真正的页面只有根路径 `/`（已由 app.get('/') 处理），
+//   其余顶层路径要么是我方自有页（已有显式路由），要么就是输错的地址。
 app.use((req, res) => {
-    // 排除已经处理过的路径
-    const path = req.path;
-    if (path.startsWith('/register') ||
-        path.startsWith('/login') ||
-        path.startsWith('/dashboard') ||
-        path.startsWith('/admin') ||
-        path === '/stats' ||
-        path === '/server-info' ||
-        path === '/bg-info' ||
-        path === '/friend-links' ||
-        path === '/bg') {
-        return res.status(404).send('Not Found');
+    const p = req.path;
+
+    // 我方自有页面（及其子路径）：一律 Not Found，绝不代理给 SillyTavern。
+    const isOwnPath =
+        p === '/st' || p.startsWith('/st/') ||
+        p.startsWith('/register') ||
+        p.startsWith('/login') ||
+        p.startsWith('/admin') ||
+        p === '/stats' || p === '/server-info' || p === '/bg-info' ||
+        p === '/friend-links' || p === '/bg';
+    if (isOwnPath) {
+        return res.status(404).type('html').send(buildNotFoundPage());
     }
 
-    // 其他路径代理到 SillyTavern
+    // SillyTavern 自身合法的顶层文档路径（如 OAuth PKCE 回调 /callback/<source>），
+    // 仍需代理给它，不能当作输错地址 404。
+    const isSTDocPath = p === '/callback' || p.startsWith('/callback/');
+
+    // 顶层文档导航到未知路径 = 用户输错地址：返回 Not Found，不代理、不跳转。
+    if (!isSTDocPath && isTopLevelDocument(req)) {
+        return res.status(404).type('html').send(buildNotFoundPage());
+    }
+
+    // 其余（SillyTavern 的接口 / 静态资源 / fetch 请求）代理到 SillyTavern。
     proxyToST(req, res, req.originalUrl);
 });
+
+// 简单的 404 页面（用户输错地址时显示，带返回数据管理页 / 进入酒馆的入口）。
+function buildNotFoundPage() {
+    const title = escapeHtml(SITE.title || 'SillyTavern');
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>404 Not Found — ${title}</title>
+<style>
+  html,body{height:100%;margin:0}
+  body{display:flex;align-items:center;justify-content:center;background:#0f1117;color:#e8eaf2;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .box{text-align:center;padding:40px}
+  .code{font-size:84px;font-weight:800;letter-spacing:2px;color:#00ccff;line-height:1;margin-bottom:8px}
+  .msg{font-size:18px;color:#aeb4c2;margin-bottom:28px}
+  .links{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .links a{display:inline-block;padding:10px 18px;border-radius:10px;text-decoration:none;
+    font-size:14px;border:1px solid rgba(255,255,255,.15);color:#e8eaf2;transition:background .15s}
+  .links a:hover{background:rgba(255,255,255,.08)}
+  .links a.primary{background:#00ccff;color:#06121a;border-color:#00ccff;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="code">404</div>
+    <div class="msg">页面不存在 · Not Found</div>
+    <div class="links">
+      <a class="primary" href="/st">返回数据管理</a>
+      <a href="/">进入酒馆</a>
+    </div>
+  </div>
+</body>
+</html>`;
+}
 
 // 判断请求是否在请求一个 HTML 文档（用于决定是否需要关压缩做改写）。
 function acceptsHtml(req) {
