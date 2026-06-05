@@ -4928,61 +4928,30 @@ function isLoggedIn(req) {
     return !!(sess && typeof sess.handle === 'string' && sess.handle.length > 0);
 }
 
-// SillyTavern 的静态资源路径（从根路径页面加载的资源）
-const stStaticPaths = ['/lib/', '/scripts/', '/css/', '/assets/', '/characters/', '/backgrounds/', '/user/', '/thumbnails/', '/worlds/', '/groups/', '/chats/', '/themes/', '/extensions/', '/instruct/', '/context/', '/QuickReplies/', '/vectors/', '/backups/', '/sysprompt/', '/reasoning/', '/User Avatars/', '/NovelAI Settings/', '/KoboldAI Settings/', '/OpenAI Settings/', '/TextGen Settings/', '/movingUI/', '/default-content/', '/img/', '/sound/', '/fonts/'];
+// 我方自有页面前缀白名单：只有这些路径由 register-server 自己处理，其余一切都代理给
+// SillyTavern。用「白名单自有页 + 默认代理」而非「黑名单/扩展名列举」，这样 SillyTavern
+// 无论新增什么文件（脚本、字体、音频、manifest…）都能自动正常代理，永远不需要在这里加路径。
+const OWN_PATH_PREFIXES = ['/st', '/register', '/login', '/admin'];
+const OWN_PATH_EXACT = ['/stats', '/server-info', '/bg-info', '/friend-links', '/bg'];
 
-app.use((req, res, next) => {
-    const path = req.path;
-
-    // 检查是否是 SillyTavern 的静态资源路径
-    const isSTStatic = stStaticPaths.some(prefix => path.startsWith(prefix));
-
-    if (isSTStatic) {
-        // 代理到 SillyTavern
-        proxyToST(req, res, req.originalUrl);
-    } else {
-        next();
+function isOwnPath(p) {
+    if (OWN_PATH_EXACT.includes(p)) return true;
+    for (const prefix of OWN_PATH_PREFIXES) {
+        if (p === prefix || p.startsWith(prefix + '/')) return true;
     }
-});
+    return false;
+}
 
-// 兜底：区分「SillyTavern 的资源/接口请求」与「用户输错地址的顶层导航」。
-// - SillyTavern 的 JS 会用 fetch/xhr 请求 /thumbnail、/version 等动态路径（非文档请求），
-//   这些必须代理给 SillyTavern；
-// - 用户在地址栏打开一个不存在的路径（顶层文档导航）则返回 Not Found，绝不再代理或跳转 ——
-//   因为 SillyTavern 是单页应用，真正的页面只有根路径 `/`（已由 app.get('/') 处理），
-//   其余顶层路径要么是我方自有页（已有显式路由），要么就是输错的地址。
+// 兜底：自有页面已在前面用显式路由处理过；走到这里说明要么是自有页的未知子路径，
+// 要么是要交给 SillyTavern 的任意请求（页面、脚本、字体、API、fetch…）。
+// 策略：自有路径前缀 → 404（我们的路由没匹配上，说明是自有页里输错的子路径）；
+//      其余一切 → 无条件代理给 SillyTavern。SillyTavern 自己会对真正不存在的文件返回
+//      它自己的 404，不会再发生「被我们误判而 404 / 跳转」的问题。
 app.use((req, res) => {
     const p = req.path;
-
-    // 我方自有页面（及其子路径）：一律 Not Found，绝不代理给 SillyTavern。
-    const isOwnPath =
-        p === '/st' || p.startsWith('/st/') ||
-        p.startsWith('/register') ||
-        p.startsWith('/login') ||
-        p.startsWith('/admin') ||
-        p === '/stats' || p === '/server-info' || p === '/bg-info' ||
-        p === '/friend-links' || p === '/bg';
-    if (isOwnPath) {
+    if (isOwnPath(p)) {
         return res.status(404).type('html').send(buildNotFoundPage());
     }
-
-    // 带文件扩展名的请求（/script.js、/style.css、/lib.js、/manifest.json、
-    // /webfonts/*.woff2、/sounds/*.mp3 等）一律视为静态资源，直接代理给 SillyTavern。
-    // 这些是 SillyTavern 首页引用的根级资源，绝不能当成「用户输错地址」而 404。
-    // 关键：不能只靠 Sec-Fetch / Accept 头判断 —— 某些资源请求带 `*/*` 会被误判为文档。
-    const hasFileExt = /\.[a-z0-9]{1,8}$/i.test(p);
-
-    // SillyTavern 自身合法的顶层文档路径（如 OAuth PKCE 回调 /callback/<source>），
-    // 仍需代理给它，不能当作输错地址 404。
-    const isSTDocPath = p === '/callback' || p.startsWith('/callback/');
-
-    // 顶层文档导航到未知路径 = 用户输错地址：返回 Not Found，不代理、不跳转。
-    // 但带扩展名的静态资源 / OAuth 回调除外，它们要正常代理。
-    if (!hasFileExt && !isSTDocPath && isTopLevelDocument(req)) {
-        return res.status(404).type('html').send(buildNotFoundPage());
-    }
-
-    // 其余（SillyTavern 的接口 / 静态资源 / fetch 请求）代理到 SillyTavern。
     proxyToST(req, res, req.originalUrl);
 });
 
