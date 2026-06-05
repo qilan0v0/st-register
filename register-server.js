@@ -4966,12 +4966,19 @@ app.use((req, res) => {
         return res.status(404).type('html').send(buildNotFoundPage());
     }
 
+    // 带文件扩展名的请求（/script.js、/style.css、/lib.js、/manifest.json、
+    // /webfonts/*.woff2、/sounds/*.mp3 等）一律视为静态资源，直接代理给 SillyTavern。
+    // 这些是 SillyTavern 首页引用的根级资源，绝不能当成「用户输错地址」而 404。
+    // 关键：不能只靠 Sec-Fetch / Accept 头判断 —— 某些资源请求带 `*/*` 会被误判为文档。
+    const hasFileExt = /\.[a-z0-9]{1,8}$/i.test(p);
+
     // SillyTavern 自身合法的顶层文档路径（如 OAuth PKCE 回调 /callback/<source>），
     // 仍需代理给它，不能当作输错地址 404。
     const isSTDocPath = p === '/callback' || p.startsWith('/callback/');
 
     // 顶层文档导航到未知路径 = 用户输错地址：返回 Not Found，不代理、不跳转。
-    if (!isSTDocPath && isTopLevelDocument(req)) {
+    // 但带扩展名的静态资源 / OAuth 回调除外，它们要正常代理。
+    if (!hasFileExt && !isSTDocPath && isTopLevelDocument(req)) {
         return res.status(404).type('html').send(buildNotFoundPage());
     }
 
