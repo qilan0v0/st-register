@@ -66,7 +66,7 @@ git-temp-{用户名}-{时间戳}/            # Git 临时目录
 ### 恢复功能
 ```
 git-restore-{用户名}-{时间戳}/         # Git 临时目录
-backup-before-restore-{用户名}-{时间戳}/  # 恢复前备份
+backup-before-restore-{用户名}-{时间戳}/  # 恢复前备份 
 ```
 
 ---
