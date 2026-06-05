@@ -36,6 +36,7 @@ const require = createRequire(import.meta.url);
 const FormData = require('form-data');
 
 import { mountAdmin } from './admin.js';
+import { stProcess } from './st-process.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -94,6 +95,8 @@ const DATA_ROOT = path.resolve(ST_DIR, stConfig.dataRoot || './data');
 // SillyTavern 内部端口：优先自身配置，否则读 SillyTavern 的 port
 const ST_PORT = (ownConfig.sillyTavern && ownConfig.sillyTavern.port) || stConfig.port || 8000;
 const ST_HOST = (ownConfig.sillyTavern && ownConfig.sillyTavern.host) || '127.0.0.1';
+// 是否由本服务自动启动并守护 SillyTavern 进程（崩溃自动重启）。默认 true。
+const ST_AUTO_START = !(ownConfig.sillyTavern && ownConfig.sillyTavern.autoStart === false);
 const STORAGE_DIR = path.join(DATA_ROOT, '_storage');
 const CONTENT_DIR = path.join(ST_DIR, 'default', 'content');
 const CONTENT_INDEX_PATH = path.join(CONTENT_DIR, 'index.json');
@@ -4583,6 +4586,7 @@ mountAdmin(app, {
     backupTempConfig: BACKUP_TEMP_CONFIG, saveBackupConfig, getTempDir,
     sillyTavernConfig: { path: stPath }, saveSillyTavernConfig, ST_DIR,
     ST_CONFIG_PATH, readSillyTavernSettings, saveSillyTavernSettings,
+    stProcess,
     mdRendererJs: MD_RENDERER_JS,
 });
 
@@ -5129,6 +5133,26 @@ async function main() {
 
     // 异步获取服务器公网 IP/地区（不阻塞启动）
     fetchServerInfo();
+
+    // 初始化 SillyTavern 进程管理器，按配置自动启动并守护
+    stProcess.init({ stDir: ST_DIR, stHost: ST_HOST, stPort: ST_PORT });
+    if (ST_AUTO_START) {
+        console.log('正在自动启动 SillyTavern（崩溃将自动重启）...');
+        stProcess.start().catch((e) => console.error('启动 SillyTavern 失败:', e.message));
+    } else {
+        console.log('已禁用自动启动 SillyTavern（config.yaml: sillyTavern.autoStart=false）。请自行启动或在后台手动启动。');
+    }
+
+    // 进程退出时一并停掉 SillyTavern，避免留下孤儿进程占用端口
+    let shuttingDown = false;
+    const shutdown = () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        try { stProcess.stop(); } catch {}
+    };
+    process.on('SIGINT', () => { shutdown(); process.exit(0); });
+    process.on('SIGTERM', () => { shutdown(); process.exit(0); });
+    process.on('exit', shutdown);
 
     // 用 http.Server 包裹 express，以便处理 WebSocket upgrade 请求。
     const server = http.createServer(app);

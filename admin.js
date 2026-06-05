@@ -546,6 +546,28 @@ const ADMIN_HTML_BODY = `
         </div>
 
         <div class="section panel">
+            <h2>⚙️ SillyTavern 进程 / 更新</h2>
+            <div class="err" id="stProcErr"></div>
+            <div id="stProcStatus" style="margin-bottom:12px;font-size:13px;line-height:1.8;">读取中…</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+                <button class="btn sm" type="button" id="stProcStartBtn">▶ 启动</button>
+                <button class="btn sm ghost" type="button" id="stProcStopBtn">⏹ 停止</button>
+                <button class="btn sm" type="button" id="stProcRestartBtn">🔄 重启</button>
+                <button class="btn sm ghost" type="button" id="stProcLogsBtn">📜 查看日志</button>
+            </div>
+
+            <div class="field">
+                <label for="stUpdateRef">更新到版本</label>
+                <select id="stUpdateRef">
+                    <option value="__latest__">最新（当前分支）</option>
+                </select>
+                <div class="hint">选择一个 tag（如 1.13.0）或分支。更新会执行 git 拉取 + npm install，完成后自动重启 SillyTavern。</div>
+            </div>
+            <button class="btn" type="button" id="stUpdateBtn" style="margin-bottom:12px;">⬇ 更新 SillyTavern</button>
+            <pre id="stUpdateLog" style="display:none;max-height:280px;overflow:auto;background:#0b0e16;border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all;"></pre>
+        </div>
+
+        <div class="section panel">
             <h2>🛠️ SillyTavern 傻瓜配置 <small>常用参数，看不懂的开关在这里改</small></h2>
             <div class="err" id="stSetErr"></div>
             <div class="checkline" style="margin-bottom:10px;" id="stSetStatus">读取中…</div>
@@ -796,7 +818,7 @@ async function refreshSession() {
 async function showDash() {
     loginView.classList.add('hidden'); disabledView.classList.add('hidden');
     dashView.classList.remove('hidden');
-    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadSTConfig(), loadSTSettings(), loadBackground(), loadCard(), loadFriendLinks()]);
+    await Promise.all([loadStatus(), loadUsers(), loadSite(), loadAnnounce(), loadRegistration(), loadBackupConfig(), loadSTConfig(), loadSTProcess(), loadSTSettings(), loadBackground(), loadCard(), loadFriendLinks()]);
 }
 
 // ── 登录 / 登出 ──
@@ -956,6 +978,103 @@ $('stForm').addEventListener('submit', async (e) => {
     if (!r.ok) { showErr($('stErr'), (r.data && r.data.error) || '保存失败。'); return; }
     toast('SillyTavern 路径已保存（重启服务后生效）');
     await loadSTConfig();
+});
+
+// ── SillyTavern 进程 / 更新 ──
+var ST_STATUS_LABEL = {
+    running: '🟢 运行中', stopped: '⚪ 已停止', crashed: '🔴 已崩溃',
+    starting: '🟡 启动中', stopping: '🟡 停止中', updating: '🔵 更新中',
+};
+async function loadSTProcess() {
+    const { ok, data } = await api('GET', '/admin/api/st-process');
+    if (!ok || !data) {
+        var box = $('stProcStatus'); if (box) box.textContent = '无法读取进程状态';
+        return;
+    }
+    var s = data.status || {};
+    var label = ST_STATUS_LABEL[s.status] || s.status || '未知';
+    var html = '<div><b>状态：</b>' + label + '</div>'
+        + '<div><b>PID：</b>' + (s.pid != null ? s.pid : '—')
+        + '　<b>运行时长：</b>' + (s.uptime ? s.uptime + ' 秒' : '—')
+        + '　<b>重启次数：</b>' + (s.restartCount || 0) + '</div>'
+        + '<div><b>当前版本：</b>' + (data.versions && data.versions.current ? data.versions.current : '未知') + '</div>';
+    $('stProcStatus').innerHTML = html;
+
+    // 填充版本下拉（仅首次或版本数变化时重建）
+    var sel = $('stUpdateRef');
+    if (sel && data.versions) {
+        var prev = sel.value;
+        var opts = ['<option value="__latest__">最新（当前分支）</option>'];
+        (data.versions.branches || []).forEach(function (b) {
+            opts.push('<option value="' + b + '">分支：' + b + '</option>');
+        });
+        (data.versions.tags || []).forEach(function (t) {
+            opts.push('<option value="' + t + '">' + t + '</option>');
+        });
+        sel.innerHTML = opts.join('');
+        if (prev) sel.value = prev;
+    }
+}
+async function stProcAction(action) {
+    hideErr($('stProcErr'));
+    var r = await api('POST', '/admin/api/st-process/' + action);
+    if (!r.ok) { showErr($('stProcErr'), (r.data && r.data.error) || '操作失败'); return; }
+    toast('已' + (action === 'start' ? '启动' : action === 'stop' ? '停止' : '重启'));
+    setTimeout(loadSTProcess, 800);
+}
+if ($('stProcStartBtn')) $('stProcStartBtn').addEventListener('click', function () { stProcAction('start'); });
+if ($('stProcStopBtn')) $('stProcStopBtn').addEventListener('click', function () { stProcAction('stop'); });
+if ($('stProcRestartBtn')) $('stProcRestartBtn').addEventListener('click', function () { stProcAction('restart'); });
+if ($('stProcLogsBtn')) $('stProcLogsBtn').addEventListener('click', async function () {
+    var { ok, data } = await api('GET', '/admin/api/st-process/logs');
+    var pre = $('stUpdateLog');
+    pre.style.display = 'block';
+    pre.textContent = (ok && data && data.logs) ? data.logs.join('\\n') : '（暂无日志）';
+    pre.scrollTop = pre.scrollHeight;
+});
+if ($('stUpdateBtn')) $('stUpdateBtn').addEventListener('click', async function () {
+    var ref = $('stUpdateRef').value;
+    var pre = $('stUpdateLog');
+    pre.style.display = 'block';
+    pre.textContent = '开始更新...\\n';
+    var btn = $('stUpdateBtn'); btn.disabled = true;
+    try {
+        var resp = await fetch('/admin/api/st-update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ref: ref }),
+        });
+        if (!resp.ok || !resp.body) { pre.textContent += 'HTTP ' + resp.status + '\\n'; btn.disabled = false; return; }
+        var reader = resp.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        while (true) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var lines = buffer.split('\\n');
+            buffer = lines.pop() || '';
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.indexOf('data: ') === 0) {
+                    try {
+                        var d = JSON.parse(line.substring(6));
+                        if (d.line) { pre.textContent += d.line + '\\n'; pre.scrollTop = pre.scrollHeight; }
+                        if (d.done) {
+                            pre.textContent += (d.ok ? '\\n✅ ' : '\\n❌ ') + (d.message || '') + '\\n';
+                            pre.scrollTop = pre.scrollHeight;
+                            toast(d.ok ? '更新完成' : '更新失败');
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+    } catch (e) {
+        pre.textContent += '\\n❌ 网络错误：' + e.message + '\\n';
+    } finally {
+        btn.disabled = false;
+        setTimeout(loadSTProcess, 1000);
+    }
 });
 
 // ── SillyTavern 傻瓜配置（直接读写 SillyTavern 的 config.yaml）──
@@ -1315,6 +1434,7 @@ export function mountAdmin(app, deps) {
         backupTempConfig, saveBackupConfig, getTempDir,
         sillyTavernConfig, saveSillyTavernConfig, ST_DIR,
         ST_CONFIG_PATH, readSillyTavernSettings, saveSillyTavernSettings,
+        stProcess,
         mdRendererJs,
     } = deps;
 
@@ -1492,7 +1612,13 @@ export function mountAdmin(app, deps) {
     app.get('/admin/api/status', requireAdmin, async (_req, res) => {
         try {
             const users = await storage.values(x => x.key.startsWith(KEY_PREFIX));
-            const online = await checkSillyTavernOnline(ST_HOST, ST_PORT);
+            // 优先用进程管理器的状态；它没接管或不在运行时回退到端口探测
+            let online;
+            if (stProcess && stProcess.getStatus().status === 'running') {
+                online = true;
+            } else {
+                online = await checkSillyTavernOnline(ST_HOST, ST_PORT);
+            }
             const size = await dirSize(DATA_ROOT);
             return res.json({
                 sillyTavernOnline: online,
@@ -1679,6 +1805,61 @@ export function mountAdmin(app, deps) {
             console.error('[后台] 保存 SillyTavern 配置失败:', err);
             return res.status(500).json({ error: '保存失败，请检查 config.yaml 是否可写。' });
         }
+    });
+
+    // ── SillyTavern 进程管理 + 更新 ──
+    // 获取进程状态 + 可选版本列表
+    app.get('/admin/api/st-process', requireAdmin, async (_req, res) => {
+        try {
+            if (!stProcess) return res.status(500).json({ error: '进程管理未启用' });
+            const status = stProcess.getStatus();
+            let versions = { tags: [], branches: [], current: '' };
+            try { versions = await stProcess.listVersions(); } catch { /* git 不可用时返回空 */ }
+            return res.json({ status, versions });
+        } catch (err) {
+            console.error('[后台] 读取进程状态失败:', err);
+            return res.status(500).json({ error: '读取进程状态失败' });
+        }
+    });
+
+    // 进程日志
+    app.get('/admin/api/st-process/logs', requireAdmin, (_req, res) => {
+        if (!stProcess) return res.status(500).json({ error: '进程管理未启用' });
+        return res.json({ logs: stProcess.getLogs() });
+    });
+
+    // 启动 / 停止 / 重启
+    app.post('/admin/api/st-process/:action', requireAdmin, async (req, res) => {
+        if (!stProcess) return res.status(500).json({ error: '进程管理未启用' });
+        const action = req.params.action;
+        try {
+            let r;
+            if (action === 'start') r = await stProcess.start();
+            else if (action === 'stop') r = await stProcess.stop();
+            else if (action === 'restart') r = await stProcess.restart();
+            else return res.status(400).json({ error: '未知操作' });
+            return res.json({ ok: !!(r && r.ok), message: r && r.message, status: stProcess.getStatus() });
+        } catch (err) {
+            console.error('[后台] 进程操作失败:', err);
+            return res.status(500).json({ error: '操作失败：' + err.message });
+        }
+    });
+
+    // 更新 SillyTavern（SSE 流式推送 git/npm 输出）
+    app.post('/admin/api/st-update', requireAdmin, jsonParser, async (req, res) => {
+        if (!stProcess) return res.status(500).json({ error: '进程管理未启用' });
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* 客户端断开 */ } };
+        const ref = (req.body && req.body.ref) || '__latest__';
+        try {
+            const result = await stProcess.update({ ref, onProgress: (line) => send({ line }) });
+            send({ done: true, ok: !!(result && result.ok), message: (result && result.message) || '' });
+        } catch (err) {
+            send({ done: true, ok: false, message: '更新异常：' + err.message });
+        }
+        res.end();
     });
 
     // 获取 SillyTavern config.yaml「傻瓜配置」当前值
