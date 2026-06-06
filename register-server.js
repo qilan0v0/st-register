@@ -3748,6 +3748,75 @@ app.post('/api/test-connection', jsonParser, async (req, res) => {
     }
 });
 
+// ─── HuggingFace LFS 旧版本清理 ──────────────────────────────────────────────
+// HF 会保留每次 push 的所有 LFS 历史版本（即使 git 历史被覆盖），这些旧版本对象会
+// 持续占用 HF 仓库的存储空间。这里通过 HF 官方 API 列出全部 LFS 对象，按时间保留最新
+// 的 N 条，其余按 OID 删除（rewriteHistory=true）。参考自项目里的 a.py 实现。
+//
+// repoId 形如 "username/dataset"；token 为 HF write token；keep 为保留条数。
+async function cleanupHuggingFaceLfs(repoId, token, keep = 2, onLog = () => {}) {
+    const headers = {
+        'content-type': 'application/json',
+        'authorization': `Bearer ${token}`,
+        'user-agent': 'st-register/1.0',
+    };
+    const base = `https://huggingface.co/api/datasets/${repoId}/lfs-files`;
+
+    // 1) 列出全部 LFS 对象
+    let files;
+    try {
+        const resp = await fetch(base, { headers });
+        if (!resp.ok) {
+            onLog(`跳过 LFS 清理：查询失败 HTTP ${resp.status}`);
+            return { ok: false, deleted: 0 };
+        }
+        files = await resp.json();
+    } catch (e) {
+        onLog('跳过 LFS 清理：查询异常 ' + e.message);
+        return { ok: false, deleted: 0 };
+    }
+    if (!Array.isArray(files) || files.length === 0) {
+        onLog('LFS 清理：远端无 LFS 对象，无需清理。');
+        return { ok: true, deleted: 0 };
+    }
+
+    // 2) 按时间倒序排序（新→旧）。HF 返回字段可能有 pushedAt / lastModified / committedAt。
+    const ts = (f) => {
+        const t = f.pushedAt || f.lastModified || f.committedAt || f.date || 0;
+        const n = typeof t === 'number' ? t : Date.parse(t);
+        return Number.isFinite(n) ? n : 0;
+    };
+    files.sort((a, b) => ts(b) - ts(a));
+
+    // 3) 保留最新 keep 条，其余删除
+    const toDelete = files.slice(Math.max(0, keep));
+    if (toDelete.length === 0) {
+        onLog(`LFS 清理：共 ${files.length} 条，未超过保留数 ${keep}，无需删除。`);
+        return { ok: true, deleted: 0 };
+    }
+    onLog(`LFS 清理：共 ${files.length} 条，保留最新 ${keep} 条，删除 ${toDelete.length} 条旧缓存...`);
+
+    let deleted = 0;
+    for (const f of toDelete) {
+        const oid = f.fileOid || f.oid;
+        if (!oid) continue;
+        try {
+            const delUrl = `${base}/${oid}?rewriteHistory=true`;
+            const dr = await fetch(delUrl, { method: 'DELETE', headers });
+            if (dr.ok) {
+                deleted++;
+                onLog(`  已删除旧缓存: ${f.filename || oid}`);
+            } else {
+                onLog(`  删除失败(${dr.status}): ${f.filename || oid}`);
+            }
+        } catch (e) {
+            onLog(`  删除异常: ${f.filename || oid} - ${e.message}`);
+        }
+    }
+    onLog(`LFS 清理完成，共删除 ${deleted} 条旧缓存。`);
+    return { ok: true, deleted };
+}
+
 // 备份当前用户数据到远程平台
 app.post('/api/backup', jsonParser, async (req, res) => {
     // 设置 SSE 响应头，用于实时推送进度
@@ -4065,6 +4134,22 @@ app.post('/api/backup', jsonParser, async (req, res) => {
             });
 
             sendProgress('推送完成，正在清理临时文件...', 95);
+
+            // HuggingFace：清理云端旧 LFS 缓存，只保留最新两条，避免历史版本持续占用空间。
+            if (platform === 'huggingface') {
+                try {
+                    sendProgress('正在清理 HuggingFace 云端旧缓存（保留最新2条）...', 97);
+                    const repoId = `${namespace}/${datasetName}`;
+                    const r = await cleanupHuggingFaceLfs(repoId, token, 2, (line) => {
+                        console.log('[备份][HF清理] ' + line);
+                        sendProgress(line, 98);
+                    });
+                    if (r.deleted > 0) sendProgress(`已清理 ${r.deleted} 条云端旧缓存`, 99);
+                } catch (cleanErr) {
+                    // 清理失败不影响备份本身的成功
+                    console.error('[备份][HF清理] 失败（不影响备份）:', cleanErr.message);
+                }
+            }
 
             // 清理临时文件
             fs.unlinkSync(tempZipPath);
