@@ -7,7 +7,7 @@
  * 纯 Node child_process + setTimeout 实现，无第三方进程管理依赖（pm2 等）。
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import http from 'node:http';
 
 const IS_WIN = process.platform === 'win32';
@@ -85,16 +85,67 @@ class STProcessManager {
         });
     }
 
+    // 找出占用内部端口的进程 PID（可能多个）。跨平台：Windows 用 netstat，*nix 用 lsof。
+    _findPortPids() {
+        const port = this.stPort;
+        const pids = new Set();
+        try {
+            if (IS_WIN) {
+                // netstat 输出形如： TCP 0.0.0.0:8000 0.0.0.0:0 LISTENING 1234
+                const out = execSync(`netstat -ano -p tcp`, { encoding: 'utf8', windowsHide: true });
+                for (const line of out.split(/\r?\n/)) {
+                    if (!/LISTENING/i.test(line)) continue;
+                    // 匹配本地地址里的 :port
+                    const m = line.match(/[:.](\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+                    if (m && parseInt(m[1], 10) === port) pids.add(m[2]);
+                }
+            } else {
+                const out = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: 'utf8' });
+                out.split(/\s+/).forEach((x) => { if (x.trim()) pids.add(x.trim()); });
+            }
+        } catch {
+            // 命令失败（无监听 / 工具缺失）→ 返回空
+        }
+        // 不要误杀自己
+        pids.delete(String(process.pid));
+        return [...pids];
+    }
+
+    // 杀掉占用内部端口的外部进程（连同子进程树）
+    _killPortPids() {
+        const pids = this._findPortPids();
+        for (const pid of pids) {
+            try {
+                if (IS_WIN) execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', windowsHide: true });
+                else execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
+                this._log(`已结束占用端口 ${this.stPort} 的进程 PID=${pid}`);
+            } catch (e) {
+                this._log(`结束进程 PID=${pid} 失败: ${e.message}`);
+            }
+        }
+        return pids.length;
+    }
+
     async start() {
         if (this.child) return { ok: true, message: '已在运行' };
         if (!this.stDir) return { ok: false, message: '未配置 SillyTavern 目录' };
 
-        // 端口已被别的进程占用 → 不重复拉起，仅作守护监测
+        // 端口已被别的（外部）进程占用 → 先结束它，再由本服务接管启动，确保单一受管实例。
         if (await this._portInUse()) {
-            this._log(`端口 ${this.stPort} 已被占用，跳过自动启动（仅监测）。如需托管请先停掉外部 SillyTavern。`);
-            this.status = 'running';
-            this.startedAt = Date.now();
-            return { ok: true, message: '端口已被占用，按外部已运行处理' };
+            this._log(`端口 ${this.stPort} 已被占用，正在结束占用进程以便接管...`);
+            const killed = this._killPortPids();
+            // 等待端口释放（最多 ~5 秒）
+            for (let i = 0; i < 10; i++) {
+                await new Promise((r) => setTimeout(r, 500));
+                if (!(await this._portInUse())) break;
+            }
+            if (await this._portInUse()) {
+                this._log(`端口 ${this.stPort} 仍被占用，无法接管。请手动结束占用该端口的程序后重试。`);
+                this.status = 'running'; // 端口上确有服务在跑，按外部已运行处理，不再误判离线
+                this.startedAt = Date.now();
+                return { ok: false, message: `端口 ${this.stPort} 被占用且无法释放` };
+            }
+            this._log(killed > 0 ? `已释放端口 ${this.stPort}，开始接管启动。` : `端口已释放，开始启动。`);
         }
 
         this.manualStop = false;
