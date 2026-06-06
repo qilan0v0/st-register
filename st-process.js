@@ -85,55 +85,94 @@ class STProcessManager {
         });
     }
 
-    // 找出占用内部端口的进程 PID（可能多个）。跨平台：Windows 用 netstat，*nix 用 lsof。
+    // 一个候选 PID 是否安全可杀。极其保守：必须是纯数字、>=10、不是自己/父进程/init。
+    // 杀错进程（尤其容器里的 PID 1 = init）会让整个容器/服务器挂掉，所以宁可不杀也不能杀错。
+    _isSafePid(pid) {
+        if (!/^\d+$/.test(String(pid))) return false; // 必须纯数字
+        const n = parseInt(pid, 10);
+        if (!Number.isInteger(n) || n < 10) return false; // 排除 1(init) 等关键低位 PID
+        if (n === process.pid) return false;              // 不杀自己
+        if (n === process.ppid) return false;             // 不杀父进程
+        return true;
+    }
+
+    // 找出占用内部端口的进程 PID（可能多个）。多工具回退，严格校验为纯数字 PID。
     _findPortPids() {
         const port = this.stPort;
         const pids = new Set();
-        try {
-            if (IS_WIN) {
-                // netstat 输出形如： TCP 0.0.0.0:8000 0.0.0.0:0 LISTENING 1234
-                const out = execSync(`netstat -ano -p tcp`, { encoding: 'utf8', windowsHide: true });
-                for (const line of out.split(/\r?\n/)) {
-                    if (!/LISTENING/i.test(line)) continue;
-                    // 匹配本地地址里的 :port
-                    const m = line.match(/[:.](\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
-                    if (m && parseInt(m[1], 10) === port) pids.add(m[2]);
-                }
-            } else {
-                const out = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: 'utf8' });
-                out.split(/\s+/).forEach((x) => { if (x.trim()) pids.add(x.trim()); });
+        const tryCmd = (cmd) => {
+            try { return execSync(cmd, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); }
+            catch { return ''; }
+        };
+
+        if (IS_WIN) {
+            // netstat 输出形如： TCP 0.0.0.0:8000 0.0.0.0:0 LISTENING 1234
+            const out = tryCmd('netstat -ano -p tcp');
+            for (const line of out.split(/\r?\n/)) {
+                if (!/LISTENING/i.test(line)) continue;
+                const m = line.match(/[:.](\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+                if (m && parseInt(m[1], 10) === port) pids.add(m[2]);
             }
-        } catch {
-            // 命令失败（无监听 / 工具缺失）→ 返回空
+        } else {
+            // 依次尝试 lsof / ss / fuser，取第一个有结果的；只接受纯数字 PID
+            // 1) lsof -ti（每行一个纯 PID）
+            let out = tryCmd(`lsof -ti tcp:${port} -sTCP:LISTEN`);
+            out.split(/\s+/).forEach((x) => { if (/^\d+$/.test(x.trim())) pids.add(x.trim()); });
+            // 2) ss -lptn（在 "pid=1234," 里取 PID）
+            if (pids.size === 0) {
+                out = tryCmd(`ss -lptnH 'sport = :${port}'`);
+                let m; const re = /pid=(\d+)/g;
+                while ((m = re.exec(out))) pids.add(m[1]);
+            }
+            // 3) fuser（输出一行纯数字 PID）
+            if (pids.size === 0) {
+                out = tryCmd(`fuser ${port}/tcp 2>/dev/null`);
+                out.split(/\s+/).forEach((x) => { if (/^\d+$/.test(x.trim())) pids.add(x.trim()); });
+            }
         }
-        // 不要误杀自己
-        pids.delete(String(process.pid));
-        return [...pids];
+
+        pids.delete(String(process.pid)); // 不杀自己
+        // 只保留通过安全校验的 PID
+        return [...pids].filter((p) => this._isSafePid(p));
     }
 
-    // 杀掉占用内部端口的外部进程（连同子进程树）
+    // 杀掉占用内部端口的外部进程（连同子进程树）。带安全校验，绝不杀 init/自身。
     _killPortPids() {
         const pids = this._findPortPids();
+        let killed = 0;
         for (const pid of pids) {
+            if (!this._isSafePid(pid)) {
+                this._log(`跳过不安全的 PID=${pid}（疑似 init/系统进程），不结束。`);
+                continue;
+            }
             try {
                 if (IS_WIN) execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', windowsHide: true });
-                else execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
+                else execSync(`kill -15 ${pid}`, { stdio: 'ignore' }); // 先温和 TERM，避免 -9 误伤
                 this._log(`已结束占用端口 ${this.stPort} 的进程 PID=${pid}`);
+                killed++;
             } catch (e) {
                 this._log(`结束进程 PID=${pid} 失败: ${e.message}`);
             }
         }
-        return pids.length;
+        return killed;
     }
 
     async start() {
         if (this.child) return { ok: true, message: '已在运行' };
         if (!this.stDir) return { ok: false, message: '未配置 SillyTavern 目录' };
 
-        // 端口已被别的（外部）进程占用 → 先结束它，再由本服务接管启动，确保单一受管实例。
+        // 端口已被别的（外部）进程占用 → 尝试安全地结束它，再由本服务接管启动。
+        // 若找不到「安全可杀」的 PID（检测不到 / 只查到 init 等关键进程），绝不强杀，
+        // 改为按「外部已运行」处理 —— 宁可不接管，也不能误杀 PID 1 把整个容器搞挂。
         if (await this._portInUse()) {
-            this._log(`端口 ${this.stPort} 已被占用，正在结束占用进程以便接管...`);
+            this._log(`端口 ${this.stPort} 已被占用，尝试结束占用进程以便接管...`);
             const killed = this._killPortPids();
+            if (killed === 0) {
+                this._log(`未找到可安全结束的占用进程，按「外部已运行」处理，仅做监测（不接管、不重启）。`);
+                this.status = 'running';
+                this.startedAt = Date.now();
+                return { ok: true, message: '端口被占用且无安全可杀进程，按外部已运行处理' };
+            }
             // 等待端口释放（最多 ~5 秒）
             for (let i = 0; i < 10; i++) {
                 await new Promise((r) => setTimeout(r, 500));
